@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="0.6.0"
+VERSION="0.7.0"
 
 # --- Update source (for self-update) ---
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
@@ -10,7 +10,7 @@ SMARTSSL_BRANCH="${SMARTSSL_BRANCH:-main}"
 SMARTSSL_RAW_BASE="https://raw.githubusercontent.com/${SMARTSSL_REPO}/${SMARTSSL_BRANCH}"
 SMARTSSL_BIN="/usr/local/bin/${APP}"
 
-# --- Paths (system defaults) ---
+# --- Paths (system defaults, overridable via env) ---
 CONF_DIR="${SMARTSSL_CONF_DIR:-/etc/${APP}}"
 DOM_DIR="${CONF_DIR}/domains"
 MAIN_CONF="${CONF_DIR}/config.ini"
@@ -80,17 +80,47 @@ domain_conf_path() { echo "${DOM_DIR}/$1.conf"; }
 lineage_path()     { echo "/etc/letsencrypt/live/$1"; }
 
 _valid_email() { [[ "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; }
+_valid_domain() { [[ "$1" =~ ^([a-zA-Z0-9]([-a-zA-Z0-9]*[a-zA-Z0-9])?\.)+[A-Za-z]{2,}$ ]]; }
 
-_valid_domain() {
-  # simple FQDN check (letters/digits/hyphens, dot separated, TLD >= 2)
-  [[ "$1" =~ ^([a-zA-Z0-9]([-a-zA-Z0-9]*[a-zA-Z0-9])?\.)+[A-Za-z]{2,}$ ]]
+# Parse token from the creds file used by certbot-dns-cloudflare
+_cf_read_token() {
+  [[ -r "$CFG_CREDS" ]] || return 2
+  local t
+  t="$(grep -E '^\s*dns_cloudflare_api_token\s*=' "$CFG_CREDS" 2>/dev/null | sed 's/.*=\s*//')"
+  [[ -n "$t" ]] || return 2
+  printf '%s' "$t"
+}
+
+# Find Cloudflare zone for a given domain using the token.
+# Returns 0 and prints "zone_name zone_id" if found.
+# Returns 1 if not found, 2 if token missing/bad, 3 if API error.
+_cf_find_zone() {
+  local dom="$1" token; token="$(_cf_read_token)" || return 2
+  local candidate="$dom" resp id
+  while [[ "$candidate" == *.* ]]; do
+    resp="$(curl -fsS -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" \
+      "https://api.cloudflare.com/client/v4/zones?name=${candidate}&status=active" 2>/dev/null || true)"
+    [[ -n "$resp" ]] || return 3
+    if grep -q '"success":true' <<<"$resp" && grep -q "\"name\":\"${candidate}\"" <<<"$resp"; then
+      id="$(grep -o '"id":"[a-f0-9]\{32\}"' <<<"$resp" | head -n1 | cut -d'"' -f4)"
+      [[ -n "$id" ]] && { echo "${candidate} ${id}"; return 0; }
+    fi
+    candidate="${candidate#*.}"
+  done
+  return 1
+}
+
+_lineage_for() {
+  local dom="$1" staging="${2:-0}" cn="$dom"
+  [[ "$staging" == "1" ]] && cn="${dom}-staging"
+  lineage_path "$cn"
 }
 
 _check_existing_cert() {
-  local dom="$1" lin; lin="$(lineage_path "$dom")"
+  local dom="$1" staging="${2:-0}" lin; lin="$(_lineage_for "$dom" "$staging")"
   if [[ -f "${lin}/cert.pem" ]]; then
     local exp; exp=$(openssl x509 -enddate -noout -in "${lin}/cert.pem" 2>/dev/null | cut -d= -f2 || echo "unknown")
-    echo "[!] A production certificate already exists for '${dom}'."
+    echo "[!] A $( [[ "$staging" == "1" ]] && echo 'staging' || echo 'production' ) certificate already exists for '${dom}'."
     echo "    Path: ${lin}"
     echo "    Expires: ${exp}"
     return 0
@@ -152,17 +182,17 @@ _build_dargs() {
 }
 
 _issue_cert() {
-  local staging_flag="$1" certname_flag="$2"; shift 2
+  local staging_flag="$1" certname_flag="$2" force_flag="$3"; shift 3
   certbot certonly \
     --dns-cloudflare \
     --dns-cloudflare-credentials "${CFG_CREDS}" \
     --dns-cloudflare-propagation-seconds "${CFG_PROPAGATION_SECONDS}" \
     "$@" \
     -m "${CFG_EMAIL}" --agree-tos --no-eff-email --non-interactive \
-    ${staging_flag} ${certname_flag}
+    ${staging_flag} ${certname_flag} ${force_flag}
 }
 
-# Simplified issuance: only Domain, Mode, Publish path; rest = defaults
+# Simplified issuance: only Domain, Mode, Publish path; CF zone + existing cert checks; save config only on success
 cmd_add_common() {
   local staging="${1:-0}"
 
@@ -170,9 +200,24 @@ cmd_add_common() {
 
   local dom mode pub
   read -rp "Domain (e.g., vpn.example.com or example.com): " dom
-  while [[ -z "$dom" || ! $(_valid_domain "$dom" && echo ok) == "ok" ]]; do
+  while true; do
+    if [[ -n "$dom" ]] && _valid_domain "$dom"; then break; fi
     read -rp "Invalid or empty domain. Enter a valid domain: " dom
   done
+
+  # Cloudflare zone access check
+  local zinfo zname zid
+  if zinfo="$(_cf_find_zone "$dom")"; then
+    read -r zname zid <<<"$zinfo"
+    echo "[*] Cloudflare zone found: ${zname}"
+  else
+    case $? in
+      1) echo "[!] Domain '${dom}' is not in your Cloudflare account (token lacks access). Add the zone in Cloudflare first."; return 1;;
+      2) echo "[!] Cloudflare token not found or unreadable at ${CFG_CREDS}. Run Setup (menu 2) first."; return 1;;
+      3) echo "[!] Cloudflare API query failed. Check network and token permissions."; return 1;;
+      *) echo "[!] Unknown error checking Cloudflare zone."; return 1;;
+    esac
+  fi
 
   read -rp "Mode (simple|wildcard) [simple]: " mode; mode="${mode:-simple}"
   if [[ "$mode" != "simple" && "$mode" != "wildcard" ]]; then
@@ -181,16 +226,16 @@ cmd_add_common() {
 
   read -rp "Publish path (empty=use LE path only): " pub
 
-  # If production and lineage already exists, inform & optionally force re-issue
-  if [[ "$staging" != "1" ]] && _check_existing_cert "$dom"; then
+  # Existing cert pre-check (production and staging)
+  local force_flag=""
+  if _check_existing_cert "$dom" "$staging"; then
     read -rp "Force re-issue anyway? (y/N): " ans
     [[ "${ans,,}" == "y" ]] || { echo "[*] Skipped issuing for ${dom}."; return 0; }
+    force_flag="--force-renewal"
   fi
 
   # Build args
   mapfile -t dargs < <(_build_dargs "$dom" "$mode")
-
-  # staging isolation: use distinct cert-name to avoid colliding with production lineage
   local staging_flag="" certname_flag=""
   if [[ "$staging" == "1" ]]; then
     echo "[*] Using Let's Encrypt STAGING (test only; not trusted by browsers/clients)."
@@ -199,7 +244,7 @@ cmd_add_common() {
   fi
 
   # Try issuance first; only save config if success
-  if _issue_cert "$staging_flag" "$certname_flag" "${dargs[@]}"; then
+  if _issue_cert "$staging_flag" "$certname_flag" "$force_flag" "${dargs[@]}"; then
     local owner="${CFG_DEFAULT_OWNER:-root:root}"
     local chn="${CFG_DEFAULT_CHAIN_MODE:-copy}"
     local conf_tmp="${TMP_DIR}/${dom}.conf.tmp"
@@ -281,7 +326,6 @@ cmd_publish() {
 cmd_enable_renew() {
   ensure_root
   local hook="/usr/local/bin/${APP}-deploy"
-  # generate deploy hook inline (no extra repo file)
   cat >"$hook" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -391,7 +435,6 @@ cmd_uninstall() {
   rm -f "/etc/letsencrypt/renewal-hooks/deploy/99-${APP}-deploy" 2>/dev/null || true
   rm -f "$hook" 2>/dev/null || true
 
-  # capture domains before removing configs (for optional purge)
   mapfile -t _doms < <(grep -h '^domain=' "${DOM_DIR}"/**/*.conf "${DOM_DIR}"/*.conf 2>/dev/null | cut -d= -f2 || true)
 
   rm -rf "$CONF_DIR" 2>/dev/null || true
