@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="0.7.1"
+VERSION="0.8.0"
 
 # --- Update source (for self-update) ---
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
@@ -190,6 +190,7 @@ _issue_cert() {
     ${staging_flag} ${certname_flag} ${force_flag}
 }
 
+# Common add flow (prod/staging)
 cmd_add_common() {
   local staging="${1:-0}"
 
@@ -220,7 +221,6 @@ cmd_add_common() {
   if [[ "$mode" != "simple" && "$mode" != "wildcard" ]]; then
     echo "Invalid mode; defaulting to 'simple'."; mode="simple"
   fi
-
   read -rp "Publish path (empty=use LE path only): " pub
 
   # Existing cert pre-check (prod or staging)
@@ -240,7 +240,7 @@ cmd_add_common() {
     certname_flag="--cert-name ${dom}-staging"
   fi
 
-  # Try issuance first; only save config if success
+  # Issue first; only save config if success
   if _issue_cert "$staging_flag" "$certname_flag" "$force_flag" "${dargs[@]}"; then
     local owner="${CFG_DEFAULT_OWNER:-root:root}"
     local chn="${CFG_DEFAULT_CHAIN_MODE:-copy}"
@@ -287,7 +287,7 @@ cmd_list() {
   done
   shopt -u nullglob
   if (( any == 0 )); then echo "(no managed domains yet)"; fi
-  return 0   # always succeed so menu doesn't exit with -e
+  return 0
 }
 
 cmd_publish() {
@@ -319,6 +319,47 @@ cmd_publish() {
   IFS=',' read -ra cmds <<< "${DOM_reload_hooks}"
   for c in "${cmds[@]}"; do c=$(echo "$c" | xargs); [[ -n "$c" ]] && bash -lc "$c" || true; done
   echo "[*] Published to ${DOM_publish_path} and hooks executed."
+}
+
+# Change publish path for an existing domain and publish immediately
+_select_domain_from_list() {
+  shopt -s nullglob
+  mapfile -t files < <(printf "%s\n" "${DOM_DIR}"/*.conf 2>/dev/null || true)
+  shopt -u nullglob
+  local n=${#files[@]}
+  (( n > 0 )) || { echo "(no managed domains)"; return 1; }
+
+  echo "Select a domain:"
+  local i=1 d
+  for f in "${files[@]}"; do
+    d=$(grep '^domain=' "$f" | cut -d= -f2)
+    printf "  %d) %s\n" "$i" "$d"
+    ((i++))
+  done
+  echo "  0) Cancel"
+  local choice
+  while true; do
+    read -rp "Enter number: " choice
+    [[ "$choice" =~ ^[0-9]+$ ]] || { echo "Enter a number."; continue; }
+    (( choice>=0 && choice<=n )) || { echo "Out of range."; continue; }
+    break
+  done
+  (( choice == 0 )) && { echo "Cancelled."; return 1; }
+  printf '%s\n' "${files[$((choice-1))]}"
+  return 0
+}
+
+cmd_change_publish() {
+  ensure_root; ensure_paths
+  local file; file="$(_select_domain_from_list)" || return 0
+  local dom; dom=$(grep '^domain=' "$file" | cut -d= -f2)
+  local curr; curr=$(grep '^publish_path=' "$file" | cut -d= -f2)
+  read -rp "New publish path for '${dom}' (empty=use LE path only) [${curr}]: " np
+  np="${np:-$curr}"
+  # update config
+  sed -i "s|^publish_path=.*|publish_path=${np}|" "$file"
+  echo "[*] Updated. Publishing now…"
+  cmd_publish "$dom"
 }
 
 cmd_enable_renew() {
@@ -362,39 +403,17 @@ cmd_rotate_token() {
 
 cmd_dry_run() { certbot renew --dry-run; }
 
+# Numbered removal UI
 cmd_remove() {
   ensure_root; ensure_paths
-  shopt -s nullglob
-  mapfile -t files < <(printf "%s\n" "${DOM_DIR}"/*.conf 2>/dev/null || true)
-  shopt -u nullglob
-  local n=${#files[@]}
-  if (( n == 0 )); then echo "(no managed domains)"; return 0; fi
-
-  echo "Select a domain to remove:"
-  local i=1 d
-  for f in "${files[@]}"; do
-    d=$(grep '^domain=' "$f" | cut -d= -f2)
-    printf "  %d) %s\n" "$i" "$d"
-    ((i++))
-  done
-  echo "  0) Cancel"
-  local choice
-  while true; do
-    read -rp "Enter number: " choice
-    [[ "$choice" =~ ^[0-9]+$ ]] || { echo "Enter a number."; continue; }
-    (( choice>=0 && choice<=n )) || { echo "Out of range."; continue; }
-    break
-  done
-  (( choice == 0 )) && { echo "Cancelled."; return 0; }
-
-  local target="${files[$((choice-1))]}"
-  local dom; dom=$(grep '^domain=' "$target" | cut -d= -f2)
+  local file; file="$(_select_domain_from_list)" || return 0
+  local dom; dom=$(grep '^domain=' "$file" | cut -d= -f2)
 
   read -rp "Also revoke and delete LE lineage for '${dom}'? (y/N): " ans
   if [[ "${ans,,}" == "y" ]]; then
     certbot delete --cert-name "$dom" || true
   fi
-  rm -f "$target"
+  rm -f "$file"
   echo "[*] Removed domain '${dom}'."
 }
 
@@ -447,7 +466,7 @@ cmd_uninstall() {
 
 menu() {
   ensure_root; ensure_paths; read_conf
-  set +e   # keep the interactive loop alive even if a command returns non-zero
+  set +e
   while true; do
     clear
     echo "=== Smart-SSL Main Menu ==="
@@ -456,13 +475,12 @@ menu() {
     echo "3) Add / Issue certificate (PRODUCTION)"
     echo "4) Add / Issue certificate (STAGING / TEST)"
     echo "5) List managed domains"
-    echo "6) Publish cert to custom path (reload hooks)"
-    echo "7) Enable auto-renew (deploy hook + certbot.timer)"
-    echo "8) Dry-run renewal test"
-    echo "9) Rotate Cloudflare token"
-    echo "10) Remove a domain"
-    echo "11) Update Smart-SSL to latest"
-    echo "12) Uninstall Smart-SSL"
+    echo "6) Change publish path & publish now"
+    echo "7) Enable auto-renew + test now (dry-run)"
+    echo "8) Rotate Cloudflare token"
+    echo "9) Remove a domain"
+    echo "10) Update Smart-SSL to latest"
+    echo "11) Uninstall Smart-SSL"
     echo "0) Exit"
     echo
     read -rp "Select an option: " choice
@@ -472,18 +490,16 @@ menu() {
       3) cmd_add; read -rp "Press Enter to continue..." _ ;;
       4) cmd_add_staging; read -rp "Press Enter to continue..." _ ;;
       5) cmd_list; read -rp "Press Enter to continue..." _ ;;
-      6) read -rp "Domain to publish: " d; cmd_publish "$d"; read -rp "Press Enter to continue..." _ ;;
-      7) cmd_enable_renew; read -rp "Press Enter to continue..." _ ;;
-      8) cmd_dry_run; read -rp "Press Enter to continue..." _ ;;
-      9) cmd_rotate_token; read -rp "Press Enter to continue..." _ ;;
-      10) cmd_remove; read -rp "Press Enter to continue..." _ ;;
-      11) cmd_self_update ;;   # restarts into new version
-      12) cmd_uninstall ;;     # exits after uninstall
+      6) cmd_change_publish; read -rp "Press Enter to continue..." _ ;;
+      7) cmd_enable_renew; cmd_dry_run; read -rp "Press Enter to continue..." _ ;;
+      8) cmd_rotate_token; read -rp "Press Enter to continue..." _ ;;
+      9) cmd_remove; read -rp "Press Enter to continue..." _ ;;
+      10) cmd_self_update ;;   # restarts into new version
+      11) cmd_uninstall ;;     # exits after uninstall
       0) clear; set -e; exit 0 ;;
       *) echo "Invalid option"; sleep 1 ;;
     esac
   done
-  # (not reached) set -e   # would restore errexit here if loop ever ended
 }
 
 # --- dispatcher ---
