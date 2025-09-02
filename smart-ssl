@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="0.4.0"
+VERSION="0.5.0"
 
 # --- Update source (for self-update) ---
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
@@ -49,8 +49,8 @@ ${APP} ${VERSION}
 Commands:
   install                 Install/check dependencies
   setup                   First-time setup (email, Cloudflare token)
-  add                     Add/issue a domain (simple or wildcard), optional publish+reload
-  add-staging             TEST issue using Let's Encrypt STAGING (no rate limits, not trusted)
+  add                     Add/issue a domain (PRODUCTION)  [prompts: domain, mode, publish path]
+  add-staging             TEST issue using Let's Encrypt STAGING
   list                    List managed domains + expiry
   publish <domain>        Copy/symlink certs to custom path & run reload hooks
   enable-renew            Install deploy hook + enable certbot.timer
@@ -87,9 +87,25 @@ cmd_install() {
   echo "[*] Done."
 }
 
+_valid_email() {
+  # quick heuristic
+  [[ "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]
+}
+
 cmd_setup() {
   ensure_root; ensure_paths; read_conf
-  read -rp "Let's Encrypt email: " email
+
+  # Email with validation
+  local email=""
+  while true; do
+    read -rp "Let's Encrypt email: " email
+    if _valid_email "$email"; then
+      break
+    else
+      echo "Invalid email format. Please try again."
+    fi
+  done
+
   read -rp "Propagation seconds [${CFG_PROPAGATION_SECONDS:-90}]: " ps
   ps="${ps:-${CFG_PROPAGATION_SECONDS:-90}}"
 
@@ -114,19 +130,14 @@ cmd_setup() {
   echo "[*] Setup complete."
 }
 
-_build_dargs_from_conf() {
-  local dom="$1" mode="$2" sans="$3"
+_build_dargs() {
+  local dom="$1" mode="$2"
   local -a out=()
   if [[ "$mode" == "wildcard" ]]; then
     out+=("-d" "${dom}" "-d" "*.${dom}")
   else
     out+=("-d" "${dom}")
   fi
-  IFS=',' read -ra extras <<< "$sans"
-  for s in "${extras[@]}"; do
-    s="$(echo "$s" | xargs)"
-    [[ -n "$s" ]] && out+=("-d" "$s")
-  done
   printf '%s\n' "${out[@]}"
 }
 
@@ -141,17 +152,27 @@ _issue_cert() {
     ${staging_flag}
 }
 
+# Simplified issuance: only Domain, Mode, Publish path; rest = defaults
 cmd_add_common() {
   local staging="${1:-0}"
 
   ensure_root; ensure_paths; read_conf; check_deps
+
+  local dom mode pub
   read -rp "Domain (e.g., vpn.example.com or example.com): " dom
+  while [[ -z "$dom" ]]; do read -rp "Domain cannot be empty. Enter domain: " dom; done
+
   read -rp "Mode (simple|wildcard) [simple]: " mode; mode="${mode:-simple}"
-  read -rp "Additional SANs (comma-separated, empty for none): " sans
+  if [[ "$mode" != "simple" && "$mode" != "wildcard" ]]; then
+    echo "Invalid mode; defaulting to 'simple'."; mode="simple"
+  fi
+
   read -rp "Publish path (empty=use LE path only): " pub
-  read -rp "Reload hooks (comma separated; e.g., 'systemctl reload xray'): " hooks
-  read -rp "Owner for published files [${CFG_DEFAULT_OWNER}]: " owner; owner="${owner:-$CFG_DEFAULT_OWNER}"
-  read -rp "Chain mode (copy|symlink) [${CFG_DEFAULT_CHAIN_MODE}]: " chn; chn="${chn:-$CFG_DEFAULT_CHAIN_MODE}"
+
+  # Defaults for advanced values
+  local owner="${CFG_DEFAULT_OWNER:-root:root}"
+  local chn="${CFG_DEFAULT_CHAIN_MODE:-copy}"
+  local sans=""; local hooks=""
 
   local conf; conf=$(domain_conf_path "$dom")
   cat >"$conf" <<EOF
@@ -166,19 +187,21 @@ cert_mode=644
 chain_mode=${chn}
 EOF
 
-  mapfile -t dargs < <(_build_dargs_from_conf "$dom" "$mode" "$sans")
+  mapfile -t dargs < <(_build_dargs "$dom" "$mode")
+
   local flag=""
   if [[ "$staging" == "1" ]]; then
     echo "[*] Using Let's Encrypt STAGING (test only; not trusted by browsers/clients)."
     flag="--staging"
   fi
+
   _issue_cert "$flag" "${dargs[@]}"
 
   [[ -n "$pub" ]] && cmd_publish "$dom" || echo "[*] Issued. Using LE live path."
 }
 
-cmd_add() { cmd_add_common 0; }
-cmd_add_staging() { cmd_add_common 1; }
+cmd_add()          { cmd_add_common 0; }
+cmd_add_staging()  { cmd_add_common 1; }
 
 cmd_list() {
   ensure_paths
