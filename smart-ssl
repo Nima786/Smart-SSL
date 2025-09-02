@@ -8,39 +8,253 @@ CONF_DIR="/etc/${APP}"
 DOM_DIR="${CONF_DIR}/domains"
 MAIN_CONF="${CONF_DIR}/config.ini"
 CF_CREDS="/root/.secrets/cloudflare.ini"
+TMP_DIR="/run/${APP}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
 ensure_root() { [[ ${EUID:-0} -eq 0 ]] || die "Run as root."; }
 
-menu() {
+ensure_paths() {
+  mkdir -p "$DOM_DIR" "$TMP_DIR"
+  chmod 700 "$TMP_DIR"
+  [[ -f "$MAIN_CONF" ]] || cat >"$MAIN_CONF" <<EOF
+email=
+propagation_seconds=90
+creds=${CF_CREDS}
+default_owner=root:root
+default_chain_mode=copy
+EOF
+}
+
+read_conf() {
+  while IFS='=' read -r k v; do
+    [[ "$k" =~ ^[a-z_]+$ ]] || continue
+    eval "CFG_${k^^}='${v}'"
+  done < <(grep -E "^[a-z_]+=" "$MAIN_CONF" || true)
+}
+
+check_deps() {
+  local missing=()
+  have certbot || missing+=("certbot")
+  have openssl || missing+=("openssl")
+  if ((${#missing[@]})); then
+    echo "Missing deps: ${missing[*]}"
+    echo "Installing..."
+    apt update
+    apt install -y certbot python3-certbot-dns-cloudflare openssl
+  fi
+  have certbot || die "certbot not installed"
+}
+
+domain_conf_path() { echo "${DOM_DIR}/$1.conf"; }
+
+cmd_install() {
+  ensure_root; ensure_paths
+  echo "[*] Installing dependencies…"
+  apt update
+  apt install -y certbot python3-certbot-dns-cloudflare openssl
+  echo "[*] Done."
+}
+
+cmd_setup() {
+  ensure_root; ensure_paths; read_conf
+  read -rp "Let's Encrypt email: " email
+  read -rp "Propagation seconds [${CFG_PROPAGATION_SECONDS:-90}]: " ps
+  ps="${ps:-${CFG_PROPAGATION_SECONDS:-90}}"
+
+  mkdir -p "$(dirname "$CF_CREDS")"
+  echo "Paste Cloudflare API token (then Ctrl-D):"
+  token=$(</dev/stdin)
+  printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDS"
+  chmod 600 "$CF_CREDS"
+
+  sed -i "s|^email=.*|email=${email}|" "$MAIN_CONF"
+  sed -i "s|^propagation_seconds=.*|propagation_seconds=${ps}|" "$MAIN_CONF"
+  sed -i "s|^creds=.*|creds=${CF_CREDS}|" "$MAIN_CONF"
+
+  echo "[*] Setup complete."
+}
+
+cmd_add() {
+  ensure_root; ensure_paths; read_conf; check_deps
+  read -rp "Domain (e.g., vpn.example.com or example.com): " dom
+  read -rp "Mode (simple|wildcard) [simple]: " mode; mode="${mode:-simple}"
+  read -rp "Additional SANs (comma-separated, empty for none): " sans
+  read -rp "Publish path (empty=use LE path only): " pub
+  read -rp "Reload hooks (comma separated; e.g., 'systemctl reload xray'): " hooks
+  read -rp "Owner for published files [${CFG_DEFAULT_OWNER}]: " owner; owner="${owner:-$CFG_DEFAULT_OWNER}"
+  read -rp "Chain mode (copy|symlink) [${CFG_DEFAULT_CHAIN_MODE}]: " chn; chn="${chn:-$CFG_DEFAULT_CHAIN_MODE}"
+
+  local conf; conf=$(domain_conf_path "$dom")
+  cat >"$conf" <<EOF
+domain=${dom}
+mode=${mode}
+sans=${sans}
+publish_path=${pub}
+reload_hooks=${hooks}
+owner=${owner}
+key_mode=600
+cert_mode=644
+chain_mode=${chn}
+EOF
+
+  dargs=()
+  if [[ "$mode" == "wildcard" ]]; then
+    dargs+=("-d" "${dom}" "-d" "*.${dom}")
+  else
+    dargs+=("-d" "${dom}")
+  fi
+  IFS=',' read -ra extras <<< "${sans}"
+  for s in "${extras[@]}"; do s=$(echo "$s" | xargs); [[ -n "$s" ]] && dargs+=("-d" "$s"); done
+
+  certbot certonly \
+    --dns-cloudflare \
+    --dns-cloudflare-credentials "${CFG_CREDS}" \
+    --dns-cloudflare-propagation-seconds "${CFG_PROPAGATION_SECONDS}" \
+    "${dargs[@]}" \
+    -m "${CFG_EMAIL}" --agree-tos --no-eff-email --non-interactive
+
+  [[ -n "$pub" ]] && cmd_publish "$dom" || echo "[*] Issued. Using LE live path."
+}
+
+cmd_list() {
+  ensure_paths
+  shopt -s nullglob
+  for f in "${DOM_DIR}"/*.conf; do
+    d=$(grep '^domain=' "$f" | cut -d= -f2)
+    mode=$(grep '^mode=' "$f" | cut -d= -f2)
+    pub=$(grep '^publish_path=' "$f" | cut -d= -f2)
+    lineage="/etc/letsencrypt/live/${d}"
+    exp="n/a"
+    [[ -f "${lineage}/cert.pem" ]] && exp=$(openssl x509 -enddate -noout -in "${lineage}/cert.pem" 2>/dev/null | cut -d= -f2 || echo "n/a")
+    echo "- ${d}  [${mode}]  publish: ${pub:-<LE path>}  expires: ${exp}"
+  done
+  shopt -u nullglob
+}
+
+cmd_publish() {
+  ensure_root; ensure_paths
+  local dom="${1:-}"; [[ -n "$dom" ]] || die "Usage: ${APP} publish <domain>"
+  local conf; conf=$(domain_conf_path "$dom"); [[ -f "$conf" ]] || die "No config for ${dom}"
+  # shellcheck disable=SC1090
+  source <(sed 's/^/DOM_/' "$conf" | sed 's/DOM_owner/DOM_OWNER/')
+  local lineage="/etc/letsencrypt/live/${DOM_domain}"
+  [[ -d "$lineage" ]] || die "No LE lineage at ${lineage}. Issue cert first."
+
+  if [[ -z "${DOM_publish_path}" ]]; then
+    echo "[*] No publish path set; nothing to do."
+    return 0
+  fi
+
+  mkdir -p "${DOM_publish_path}"
+
+  if [[ "${DOM_chain_mode:-copy}" == "symlink" ]]; then
+    ln -sfn "${lineage}/privkey.pem" "${DOM_publish_path}/privkey.pem"
+    ln -sfn "${lineage}/fullchain.pem" "${DOM_publish_path}/fullchain.pem"
+  else
+    install -m "${DOM_key_mode:-600}" -o "${DOM_OWNER%:*}" -g "${DOM_OWNER#*:}" \
+      "${lineage}/privkey.pem" "${DOM_publish_path}/privkey.pem"
+    install -m "${DOM_cert_mode:-644}" -o "${DOM_OWNER%:*}" -g "${DOM_OWNER#*:}" \
+      "${lineage}/fullchain.pem" "${DOM_publish_path}/fullchain.pem"
+  fi
+
+  IFS=',' read -ra cmds <<< "${DOM_reload_hooks}"
+  for c in "${cmds[@]}"; do c=$(echo "$c" | xargs); [[ -n "$c" ]] && bash -lc "$c" || true; done
+  echo "[*] Published to ${DOM_publish_path} and hooks executed."
+}
+
+cmd_enable_renew() {
   ensure_root
+  local hook="/usr/local/bin/${APP}-deploy"
+  cat >"$hook" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+APP="smart-ssl"
+CONF_DIR="/etc/${APP}"
+DOM_DIR="${CONF_DIR}/domains"
+BIN="/usr/local/bin/${APP}"
+shopt -s nullglob
+for conf in "${DOM_DIR}"/*.conf; do
+  dom=$(grep '^domain=' "$conf" | cut -d= -f2)
+  [[ -n "$dom" ]] && "${BIN}" publish "$dom" || true
+done
+shopt -u nullglob
+EOF
+  chmod 0755 "$hook"
+
+  mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+  ln -sfn "$hook" "/etc/letsencrypt/renewal-hooks/deploy/99-${APP}-deploy"
+  systemctl enable --now certbot.timer || true
+  echo "[*] Auto-renew enabled with deploy hook."
+}
+
+cmd_rotate_token() {
+  ensure_root; ensure_paths; read_conf
+  echo "Paste NEW Cloudflare API token (then Ctrl-D):"
+  token=$(</dev/stdin)
+  printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CFG_CREDS"
+  chmod 600 "$CFG_CREDS"
+  echo "[*] Updated token at ${CFG_CREDS}"
+}
+
+cmd_dry_run() { certbot renew --dry-run; }
+
+cmd_remove() {
+  ensure_root
+  read -rp "Domain to remove: " dom
+  local conf; conf=$(domain_conf_path "$dom"); [[ -f "$conf" ]] || die "Not found."
+  read -rp "Also revoke and delete LE lineage for '${dom}'? (y/N): " ans
+  if [[ "${ans,,}" == "y" ]]; then
+    certbot delete --cert-name "$dom" || true
+  fi
+  rm -f "$conf"
+  echo "[*] Removed domain config."
+}
+
+menu() {
+  ensure_root; ensure_paths; read_conf
   while true; do
     clear
     echo "=== Smart-SSL Main Menu ==="
     echo "1) Install dependencies"
     echo "2) Setup (email + Cloudflare token)"
     echo "3) Add / Issue certificate"
-    echo "4) List certificates"
-    echo "5) Enable auto-renew"
-    echo "6) Dry-run renewal test"
-    echo "7) Rotate Cloudflare token"
-    echo "8) Remove a certificate"
+    echo "4) List managed domains"
+    echo "5) Publish cert to custom path (reload hooks)"
+    echo "6) Enable auto-renew (deploy hook + certbot.timer)"
+    echo "7) Dry-run renewal test"
+    echo "8) Rotate Cloudflare token"
+    echo "9) Remove a domain"
     echo "0) Exit"
     echo
-    read -rp "Choice: " c
-    case "$c" in
-      1) apt update && apt install -y certbot python3-certbot-dns-cloudflare openssl;;
-      2) read -rp "Email: " e; mkdir -p /root/.secrets; echo "Paste CF API token:"; echo "dns_cloudflare_api_token = $(</dev/stdin)" > $CF_CREDS; chmod 600 $CF_CREDS; echo "email=$e" > $MAIN_CONF;;
-      3) read -rp "Domain: " dom; certbot certonly --dns-cloudflare --dns-cloudflare-credentials "$CF_CREDS" -d "$dom" -m "$(grep '^email=' $MAIN_CONF|cut -d= -f2)" --agree-tos --no-eff-email --non-interactive;;
-      4) certbot certificates;;
-      5) systemctl enable --now certbot.timer;;
-      6) certbot renew --dry-run;;
-      7) echo "Paste NEW CF token:"; echo "dns_cloudflare_api_token = $(</dev/stdin)" > $CF_CREDS; chmod 600 $CF_CREDS;;
-      8) read -rp "Domain to remove: " dom; certbot delete --cert-name "$dom";;
-      0) exit 0;;
+    read -rp "Select an option: " choice
+    case "$choice" in
+      1) cmd_install; read -rp "Press Enter to continue..." _ ;;
+      2) cmd_setup; read -rp "Press Enter to continue..." _ ;;
+      3) cmd_add; read -rp "Press Enter to continue..." _ ;;
+      4) cmd_list; read -rp "Press Enter to continue..." _ ;;
+      5) read -rp "Domain to publish: " d; cmd_publish "$d"; read -rp "Press Enter to continue..." _ ;;
+      6) cmd_enable_renew; read -rp "Press Enter to continue..." _ ;;
+      7) cmd_dry_run; read -rp "Press Enter to continue..." _ ;;
+      8) cmd_rotate_token; read -rp "Press Enter to continue..." _ ;;
+      9) cmd_remove; read -rp "Press Enter to continue..." _ ;;
+      0) clear; exit 0 ;;
+      *) echo "Invalid option"; sleep 1 ;;
     esac
-    read -rp "Press Enter to continue..." _
   done
 }
 
-menu
+case "${1:-}" in
+  install) shift; cmd_install "$@";;
+  setup) shift; cmd_setup "$@";;
+  add) shift; cmd_add "$@";;
+  list) shift; cmd_list "$@";;
+  publish) shift; cmd_publish "${1:-}";;
+  rotate-token) shift; cmd_rotate_token "$@";;
+  enable-renew) shift; cmd_enable_renew "$@";;
+  dry-run) shift; cmd_dry_run "$@";;
+  remove) shift; cmd_remove "$@";;
+  version) echo "${APP} ${VERSION}";;
+  menu|'') menu ;;
+  *) print_usage;;
+esac
