@@ -2,22 +2,19 @@
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="0.8.1"
+VERSION="0.8.2"
 
-# --- Update source (for self-update) ---
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
 SMARTSSL_BRANCH="${SMARTSSL_BRANCH:-main}"
 SMARTSSL_RAW_BASE="https://raw.githubusercontent.com/${SMARTSSL_REPO}/${SMARTSSL_BRANCH}"
 SMARTSSL_BIN="/usr/local/bin/${APP}"
 
-# --- Paths (system defaults, overridable via env) ---
 CONF_DIR="${SMARTSSL_CONF_DIR:-/etc/${APP}}"
 DOM_DIR="${CONF_DIR}/domains"
 MAIN_CONF="${CONF_DIR}/config.ini"
 CF_CREDS="${SMARTSSL_CREDS_PATH:-/root/.secrets/cloudflare.ini}"
 TMP_DIR="${SMARTSSL_TMP_DIR:-/run/${APP}}"
 
-# --- helpers ---
 die() { echo "ERROR: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 ensure_root() { [[ ${EUID:-0} -eq 0 ]] || die "Run as root."; }
@@ -41,28 +38,6 @@ read_conf() {
   done < <(grep -E "^[a-z_]+=" "$MAIN_CONF" || true)
 }
 
-print_usage() {
-  echo "(Tip: run 'smart-ssl' with no arguments to open the interactive menu.)"
-  cat <<USAGE
-${APP} ${VERSION}
-
-Commands:
-  install                 Install/check dependencies
-  setup                   First-time setup (email, Cloudflare token)
-  add                     Issue certificate (PRODUCTION)
-  add-staging             Issue certificate (STAGING / TEST)
-  list                    List managed domains + expiry
-  publish <domain>        Copy/symlink certs to custom path & run reload hooks
-  enable-renew            Install deploy hook + enable certbot.timer
-  rotate-token            Update Cloudflare API token
-  dry-run                 Run 'certbot renew --dry-run'
-  remove                  Remove a domain (select from numbered list)
-  self-update             Fetch and install the latest smart-ssl from GitHub
-  uninstall               Remove Smart-SSL (with prompts)
-  version                 Print version
-USAGE
-}
-
 check_deps() {
   local missing=()
   have certbot || missing+=("certbot")
@@ -82,7 +57,6 @@ lineage_path()     { echo "/etc/letsencrypt/live/$1"; }
 _valid_email()  { [[ "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; }
 _valid_domain() { [[ "$1" =~ ^([a-zA-Z0-9]([-a-zA-Z0-9]*[a-zA-Z0-9])?\.)+[A-Za-z]{2,}$ ]]; }
 
-# Parse token from certbot-dns-cloudflare creds
 _cf_read_token() {
   [[ -r "$CFG_CREDS" ]] || return 2
   local t
@@ -91,7 +65,6 @@ _cf_read_token() {
   printf '%s' "$t"
 }
 
-# Cloudflare zone lookup; prints "zone_name zone_id" if found
 _cf_find_zone() {
   local dom="$1" token; token="$(_cf_read_token)" || return 2
   local candidate="$dom" resp id
@@ -108,11 +81,7 @@ _cf_find_zone() {
   return 1
 }
 
-_lineage_for() {
-  local dom="$1" staging="${2:-0}" cn="$dom"
-  [[ "$staging" == "1" ]] && cn="${dom}-staging"
-  lineage_path "$cn"
-}
+_lineage_for() { local dom="$1" staging="${2:-0}" cn="$dom"; [[ "$staging" == "1" ]] && cn="${dom}-staging"; lineage_path "$cn"; }
 
 _check_existing_cert() {
   local dom="$1" staging="${2:-0}" lin; lin="$(_lineage_for "$dom" "$staging")"
@@ -126,56 +95,25 @@ _check_existing_cert() {
   return 1
 }
 
-# --- commands ---
-cmd_install() {
-  ensure_root; ensure_paths
-  echo "[*] Installing dependencies…"
-  apt update
-  apt install -y certbot python3-certbot-dns-cloudflare openssl
-  echo "[*] Done."
-}
+cmd_install() { ensure_root; ensure_paths; echo "[*] Installing dependencies…"; apt update; apt install -y certbot python3-certbot-dns-cloudflare openssl; echo "[*] Done."; }
 
 cmd_setup() {
   ensure_root; ensure_paths; read_conf
-
-  local email=""
-  while true; do
-    read -rp "Let's Encrypt email: " email
-    _valid_email "$email" && break
-    echo "Invalid email format. Please try again."
-  done
-
-  read -rp "Propagation seconds [${CFG_PROPAGATION_SECONDS:-90}]: " ps
-  ps="${ps:-${CFG_PROPAGATION_SECONDS:-90}}"
-
+  local email=""; while true; do read -rp "Let's Encrypt email: " email; _valid_email "$email" && break; echo "Invalid email format. Please try again."; done
+  read -rp "Propagation seconds [${CFG_PROPAGATION_SECONDS:-90}]: " ps; ps="${ps:-${CFG_PROPAGATION_SECONDS:-90}}"
   mkdir -p "$(dirname "$CF_CREDS")"
-
-  token="${SMARTSSL_CF_TOKEN:-}"
-  if [[ -z "$token" ]]; then
-    read -rp "Cloudflare API token (paste then ENTER): " token
-    echo
-  fi
-  token="${token//$'\r'/}"
-  [[ -n "$token" ]] || die "Token cannot be empty."
-
-  printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDS"
-  chmod 600 "$CF_CREDS"
-
+  token="${SMARTSSL_CF_TOKEN:-}"; [[ -n "$token" ]] || { read -rp "Cloudflare API token (paste then ENTER): " token; echo; }
+  token="${token//$'\r'/}"; [[ -n "$token" ]] || die "Token cannot be empty."
+  printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDS"; chmod 600 "$CF_CREDS"
   sed -i "s|^email=.*|email=${email}|" "$MAIN_CONF"
   sed -i "s|^propagation_seconds=.*|propagation_seconds=${ps}|" "$MAIN_CONF"
   sed -i "s|^creds=.*|creds=${CF_CREDS}|" "$MAIN_CONF"
-
   echo "[*] Setup complete."
 }
 
 _build_dargs() {
-  local dom="$1" mode="$2"
-  local -a out=()
-  if [[ "$mode" == "wildcard" ]]; then
-    out+=("-d" "${dom}" "-d" "*.${dom}")
-  else
-    out+=("-d" "${dom}")
-  fi
+  local dom="$1" mode="$2"; local -a out=()
+  if [[ "$mode" == "wildcard" ]]; then out+=("-d" "${dom}" "-d" "*.${dom}"); else out+=("-d" "${dom}"); fi
   printf '%s\n' "${out[@]}"
 }
 
@@ -190,63 +128,28 @@ _issue_cert() {
     ${staging_flag} ${certname_flag} ${force_flag}
 }
 
-# Common add flow (prod/staging)
 cmd_add_common() {
   local staging="${1:-0}"
-
   ensure_root; ensure_paths; read_conf; check_deps
-
   local dom mode pub
   read -rp "Domain (e.g., vpn.example.com or example.com): " dom
-  while true; do
-    if [[ -n "$dom" ]] && _valid_domain "$dom"; then break; fi
-    read -rp "Invalid or empty domain. Enter a valid domain: " dom
-  done
-
-  # Cloudflare zone access check
+  while true; do [[ -n "$dom" ]] && _valid_domain "$dom" && break; read -rp "Invalid or empty domain. Enter a valid domain: " dom; done
   local zinfo zname zid
-  if zinfo="$(_cf_find_zone "$dom")"; then
-    read -r zname zid <<<"$zinfo"
-    echo "[*] Cloudflare zone found: ${zname}"
-  else
-    case $? in
+  if zinfo="$(_cf_find_zone "$dom")"; then read -r zname zid <<<"$zinfo"; echo "[*] Cloudflare zone found: ${zname}"
+  else case $? in
       1) echo "[!] Domain '${dom}' is not in your Cloudflare account (token lacks access). Add the zone in Cloudflare first."; return 1;;
       2) echo "[!] Cloudflare token not found or unreadable at ${CFG_CREDS}. Run Setup (menu 2) first."; return 1;;
       3) echo "[!] Cloudflare API query failed. Check network and token permissions."; return 1;;
       *) echo "[!] Unknown error checking Cloudflare zone."; return 1;;
     esac
   fi
-
-  read -rp "Mode (simple|wildcard) [simple]: " mode; mode="${mode:-simple}"
-  if [[ "$mode" != "simple" && "$mode" != "wildcard" ]]; then
-    echo "Invalid mode; defaulting to 'simple'."; mode="simple"
-  fi
+  read -rp "Mode (simple|wildcard) [simple]: " mode; mode="${mode:-simple}"; [[ "$mode" == "simple" || "$mode" == "wildcard" ]] || { echo "Invalid mode; defaulting to 'simple'."; mode="simple"; }
   read -rp "Publish path (empty=use LE path only): " pub
-
-  # Existing cert pre-check (prod or staging)
-  local force_flag=""
-  if _check_existing_cert "$dom" "$staging"; then
-    read -rp "Force re-issue anyway? (y/N): " ans
-    [[ "${ans,,}" == "y" ]] || { echo "[*] Skipped issuing for ${dom}."; return 0; }
-    force_flag="--force-renewal"
-  fi
-
-  # Build args
+  local force_flag=""; if _check_existing_cert "$dom" "$staging"; then read -rp "Force re-issue anyway? (y/N): " ans; [[ "${ans,,}" == "y" ]] || { echo "[*] Skipped issuing for ${dom}."; return 0; }; force_flag="--force-renewal"; fi
   mapfile -t dargs < <(_build_dargs "$dom" "$mode")
-  local staging_flag="" certname_flag=""
-  if [[ "$staging" == "1" ]]; then
-    echo "[*] Using Let's Encrypt STAGING (test only; not trusted by browsers/clients)."
-    staging_flag="--staging"
-    certname_flag="--cert-name ${dom}-staging"
-  fi
-
-  # Issue first; only save config if success
+  local staging_flag="" certname_flag=""; if [[ "$staging" == "1" ]]; then echo "[*] Using Let's Encrypt STAGING (test only; not trusted by browsers/clients)."; staging_flag="--staging"; certname_flag="--cert-name ${dom}-staging"; fi
   if _issue_cert "$staging_flag" "$certname_flag" "$force_flag" "${dargs[@]}"; then
-    local owner="${CFG_DEFAULT_OWNER:-root:root}"
-    local chn="${CFG_DEFAULT_CHAIN_MODE:-copy}"
-    local conf_tmp="${TMP_DIR}/${dom}.conf.tmp"
-    local conf_fin; conf_fin=$(domain_conf_path "$dom")
-
+    local owner="${CFG_DEFAULT_OWNER:-root:root}" chn="${CFG_DEFAULT_CHAIN_MODE:-copy}" conf_tmp="${TMP_DIR}/${dom}.conf.tmp" conf_fin; conf_fin=$(domain_conf_path "$dom")
     cat >"$conf_tmp" <<EOF
 domain=${dom}
 mode=${mode}
@@ -258,13 +161,10 @@ key_mode=600
 cert_mode=644
 chain_mode=${chn}
 EOF
-    install -m 0644 "$conf_tmp" "$conf_fin"
-    rm -f "$conf_tmp"
-
+    install -m 0644 "$conf_tmp" "$conf_fin"; rm -f "$conf_tmp"
     [[ -n "$pub" ]] && cmd_publish "$dom" || echo "[*] Issued. Using LE live path."
   else
-    echo "[!] Issuance failed for ${dom}. No config was saved."
-    return 1
+    echo "[!] Issuance failed for ${dom}. No config was saved."; return 1
   fi
 }
 
@@ -272,8 +172,7 @@ cmd_add()         { cmd_add_common 0; }
 cmd_add_staging() { cmd_add_common 1; }
 
 cmd_list() {
-  ensure_paths
-  shopt -s nullglob
+  ensure_paths; shopt -s nullglob
   local any=0
   for f in "${DOM_DIR}"/*.conf; do
     any=1
@@ -286,7 +185,7 @@ cmd_list() {
     printf -- "- %-30s [%s]  publish: %-15s  expires: %s\n" "$d" "$mode" "${pub:-<LE path>}" "$exp"
   done
   shopt -u nullglob
-  if (( any == 0 )); then echo "(no managed domains yet)"; fi
+  (( any == 0 )) && echo "(no managed domains yet)"
   return 0
 }
 
@@ -296,60 +195,48 @@ cmd_publish() {
   local conf; conf=$(domain_conf_path "$dom"); [[ -f "$conf" ]] || die "No config for ${dom}"
   # shellcheck disable=SC1090
   source <(sed 's/^/DOM_/' "$conf" | sed 's/DOM_owner/DOM_OWNER/')
-  local lineage="/etc/letsencrypt/live/${DOM_domain}"
-  [[ -d "$lineage" ]] || die "No LE lineage at ${lineage}. Issue cert first."
-
-  if [[ -z "${DOM_publish_path}" ]]; then
-    echo "[*] No publish path set; nothing to do."
-    return 0
-  fi
-
+  local lineage="/etc/letsencrypt/live/${DOM_domain}"; [[ -d "$lineage" ]] || die "No LE lineage at ${lineage}. Issue cert first."
+  if [[ -z "${DOM_publish_path}" ]]; then echo "[*] No publish path set; nothing to do."; return 0; fi
   mkdir -p "${DOM_publish_path}"
-
   if [[ "${DOM_chain_mode:-copy}" == "symlink" ]]; then
     ln -sfn "${lineage}/privkey.pem" "${DOM_publish_path}/privkey.pem"
     ln -sfn "${lineage}/fullchain.pem" "${DOM_publish_path}/fullchain.pem"
   else
-    install -m "${DOM_key_mode:-600}" -o "${DOM_OWNER%:*}" -g "${DOM_OWNER#*:}" \
-      "${lineage}/privkey.pem" "${DOM_publish_path}/privkey.pem"
-    install -m "${DOM_cert_mode:-644}" -o "${DOM_OWNER%:*}" -g "${DOM_OWNER#*:}" \
-      "${lineage}/fullchain.pem" "${DOM_publish_path}/fullchain.pem"
+    install -m "${DOM_key_mode:-600}" -o "${DOM_OWNER%:*}" -g "${DOM_OWNER#*:}" "${lineage}/privkey.pem" "${DOM_publish_path}/privkey.pem"
+    install -m "${DOM_cert_mode:-644}" -o "${DOM_OWNER%:*}" -g "${DOM_OWNER#*:}" "${lineage}/fullchain.pem" "${DOM_publish_path}/fullchain.pem"
   fi
-
-  IFS=',' read -ra cmds <<< "${DOM_reload_hooks}"
-  for c in "${cmds[@]}"; do c=$(echo "$c" | xargs); [[ -n "$c" ]] && bash -lc "$c" || true; done
+  IFS=',' read -ra cmds <<< "${DOM_reload_hooks}"; for c in "${cmds[@]}"; do c=$(echo "$c" | xargs); [[ -n "$c" ]] && bash -lc "$c" || true; done
   echo "[*] Published to ${DOM_publish_path} and hooks executed."
 }
 
-# ------- Numbered selector used by 6 & 9 -------
+# ---------- Numbered selector (prints to screen even when captured) ----------
 _select_domain_from_list() {
   shopt -s nullglob
   mapfile -t files < <(printf "%s\n" "${DOM_DIR}"/*.conf 2>/dev/null || true)
   shopt -u nullglob
   local n=${#files[@]}
-  (( n > 0 )) || { echo "(no managed domains)"; return 1; }
+  (( n > 0 )) || { echo "(no managed domains)" >&2; return 1; }
 
-  echo "Select a domain:"
+  echo "Select a domain:" >&2
   local i=1 d
   for f in "${files[@]}"; do
     d=$(grep '^domain=' "$f" | cut -d= -f2)
-    printf "  %d) %s\n" "$i" "$d"
+    printf "  %d) %s\n" "$i" "$d" >&2
     ((i++))
   done
-  echo "  0) Cancel"
+  echo "  0) Cancel" >&2
   local choice
   while true; do
     read -rp "Enter number: " choice
-    [[ "$choice" =~ ^[0-9]+$ ]] || { echo "Enter a number."; continue; }
-    (( choice>=0 && choice<=n )) || { echo "Out of range."; continue; }
+    [[ "$choice" =~ ^[0-9]+$ ]] || { echo "Enter a number." >&2; continue; }
+    (( choice>=0 && choice<=n )) || { echo "Out of range." >&2; continue; }
     break
   done
-  (( choice == 0 )) && { echo "Cancelled."; return 1; }
-  printf '%s\n' "${files[$((choice-1))]}"
+  (( choice == 0 )) && { echo "Cancelled." >&2; return 1; }
+  printf '%s\n' "${files[$((choice-1))]}"   # ONLY the selected path to stdout
   return 0
 }
 
-# --- 6) Change publish path & publish now (shows numbered list) ---
 cmd_change_publish() {
   ensure_root; ensure_paths
   local file; file="$(_select_domain_from_list)" || return 0
@@ -362,11 +249,11 @@ cmd_change_publish() {
   cmd_publish "$dom"
 }
 
-# --- 7) Enable auto-renew + let user raise propagation seconds; update renewal *.conf; dry-run ---
+# ---- Auto-renew + raise propagation seconds, update all renewal *.conf, dry-run ----
 cmd_enable_renew_and_test() {
   ensure_root; ensure_paths; read_conf
 
-  # Create deploy hook
+  # Deploy hook
   local hook="/usr/local/bin/${APP}-deploy"
   cat >"$hook" <<'EOF'
 #!/usr/bin/env bash
@@ -388,31 +275,22 @@ EOF
   systemctl enable --now certbot.timer || true
   echo "[*] Auto-renew enabled with deploy hook."
 
-  # Let user adjust propagation seconds for renewals
+  # Ask for desired propagation seconds
   local current_ps="${CFG_PROPAGATION_SECONDS:-90}"
   read -rp "Propagation seconds for DNS validation during renewals [${current_ps}]: " newps
   newps="${newps:-$current_ps}"
+
   # Update global default
   sed -i "s|^propagation_seconds=.*|propagation_seconds=${newps}|" "$MAIN_CONF"
 
-  # Update each renewal file that uses dns-cloudflare
+  # Update each renewal file that uses dns-cloudflare:
   shopt -s nullglob
   for r in /etc/letsencrypt/renewal/*.conf; do
     grep -q '^\s*authenticator\s*=\s*dns-cloudflare' "$r" || continue
     if grep -q '^\s*dns_cloudflare_propagation_seconds\s*=' "$r"; then
       sed -i "s/^\s*dns_cloudflare_propagation_seconds\s*=.*/dns_cloudflare_propagation_seconds = ${newps}/" "$r"
     else
-      # try to add inside [renewalparams]; if not present, append at end
-      if grep -q '^\[renewalparams\]' "$r"; then
-        awk -v ps="${newps}" '
-          BEGIN{done=0}
-          /^\[renewalparams\]/ {print; print "dns_cloudflare_propagation_seconds = " ps; done=1; next}
-          {print}
-          END{if(!done) print "dns_cloudflare_propagation_seconds = " ps}
-        ' "$r" > "${r}.tmp" && mv "${r}.tmp" "$r"
-      else
-        echo "dns_cloudflare_propagation_seconds = ${newps}" >> "$r"
-      fi
+      echo "dns_cloudflare_propagation_seconds = ${newps}" >> "$r"
     fi
   done
   shopt -u nullglob
@@ -421,50 +299,26 @@ EOF
   certbot renew --dry-run || true
 }
 
-cmd_rotate_token() {
-  ensure_root; ensure_paths; read_conf
-  token="${SMARTSSL_CF_TOKEN:-}"
-  if [[ -z "$token" ]]; then
-    read -rp "New Cloudflare API token (paste then ENTER): " token
-    echo
-  fi
-  token="${token//$'\r'/}"
-  [[ -n "$token" ]] || die "Token cannot be empty."
-  printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CFG_CREDS"
-  chmod 600 "$CFG_CREDS"
-  echo "[*] Updated token at ${CFG_CREDS}"
-}
-
+cmd_rotate_token() { ensure_root; ensure_paths; read_conf; token="${SMARTSSL_CF_TOKEN:-}"; [[ -n "$token" ]] || { read -rp "New Cloudflare API token (paste then ENTER): " token; echo; }; token="${token//$'\r'/}"; [[ -n "$token" ]] || die "Token cannot be empty."; printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CFG_CREDS"; chmod 600 "$CFG_CREDS"; echo "[*] Updated token at ${CFG_CREDS}"; }
 cmd_dry_run() { certbot renew --dry-run; }
 
-# --- 9) Remove (numbered) ---
 cmd_remove() {
   ensure_root; ensure_paths
   local file; file="$(_select_domain_from_list)" || return 0
   local dom; dom=$(grep '^domain=' "$file" | cut -d= -f2)
-
   read -rp "Also revoke and delete LE lineage for '${dom}'? (y/N): " ans
-  if [[ "${ans,,}" == "y" ]]; then
-    certbot delete --cert-name "$dom" || true
-  fi
-  rm -f "$file"
-  echo "[*] Removed domain '${dom}'."
+  [[ "${ans,,}" == "y" ]] && certbot delete --cert-name "$dom" || true
+  rm -f "$file"; echo "[*] Removed domain '${dom}'."
 }
 
 cmd_self_update() {
   ensure_root
-  local tmp; tmp="$(mktemp)"
-  local url="${SMARTSSL_RAW_BASE}/smart-ssl"
+  local tmp; tmp="$(mktemp)"; local url="${SMARTSSL_RAW_BASE}/smart-ssl"
   echo "[*] Fetching latest Smart-SSL from: ${url}"
-  if ! curl -fsSL "$url" -o "$tmp"; then
-    rm -f "$tmp"; die "Download failed."
-  fi
+  curl -fsSL "$url" -o "$tmp" || { rm -f "$tmp"; die "Download failed."; }
   grep -q '^APP="smart-ssl"$' "$tmp" || { rm -f "$tmp"; die "Downloaded file doesn't look like smart-ssl."; }
-  echo "[*] Installing to ${SMARTSSL_BIN}"
-  install -m 0755 "$tmp" "$SMARTSSL_BIN"
-  rm -f "$tmp"
-  echo "[*] Updated. Restarting Smart-SSL…"
-  exec "$SMARTSSL_BIN" menu
+  install -m 0755 "$tmp" "$SMARTSSL_BIN"; rm -f "$tmp"
+  echo "[*] Updated. Restarting Smart-SSL…"; exec "$SMARTSSL_BIN" menu
 }
 
 cmd_uninstall() {
@@ -475,32 +329,21 @@ cmd_uninstall() {
   echo " - Cloudflare token file: ${CF_CREDS}"
   echo " - Deploy hook (if present)"
   echo "It will NOT delete Let's Encrypt certificates unless you confirm."
-  read -rp "Proceed? (y/N): " ans
-  [[ "${ans,,}" == "y" ]] || { echo "Aborted."; return 0; }
-
+  read -rp "Proceed? (y/N): " ans; [[ "${ans,,}" == "y" ]] || { echo "Aborted."; return 0; }
   local hook="/usr/local/bin/${APP}-deploy"
   rm -f "/etc/letsencrypt/renewal-hooks/deploy/99-${APP}-deploy" 2>/dev/null || true
   rm -f "$hook" 2>/dev/null || true
-
   mapfile -t _doms < <(grep -h '^domain=' "${DOM_DIR}"/**/*.conf "${DOM_DIR}"/*.conf 2>/dev/null | cut -d= -f2 || true)
-
   rm -rf "$CONF_DIR" 2>/dev/null || true
   rm -f "$CF_CREDS" 2>/dev/null || true
-
   read -rp "Also delete issued Let's Encrypt certificates for managed domains? (y/N): " purge
-  if [[ "${purge,,}" == "y" ]]; then
-    for d in "${_doms[@]}"; do
-      [[ -n "$d" ]] && certbot delete --cert-name "$d" || true
-    done
-  fi
-
+  if [[ "${purge,,}" == "y" ]]; then for d in "${_doms[@]}"; do [[ -n "$d" ]] && certbot delete --cert-name "$d" || true; done; fi
   rm -f "$SMARTSSL_BIN" 2>/dev/null || true
   echo "[*] Uninstalled."
 }
 
 menu() {
-  ensure_root; ensure_paths; read_conf
-  set +e
+  ensure_root; ensure_paths; read_conf; set +e
   while true; do
     clear
     echo "=== Smart-SSL Main Menu ==="
@@ -528,15 +371,14 @@ menu() {
       7) cmd_enable_renew_and_test; read -rp "Press Enter to continue..." _ ;;
       8) cmd_rotate_token; read -rp "Press Enter to continue..." _ ;;
       9) cmd_remove; read -rp "Press Enter to continue..." _ ;;
-      10) cmd_self_update ;;   # restarts into new version
-      11) cmd_uninstall ;;     # exits after uninstall
+      10) cmd_self_update ;;
+      11) cmd_uninstall ;;
       0) clear; set -e; exit 0 ;;
       *) echo "Invalid option"; sleep 1 ;;
     esac
   done
 }
 
-# --- dispatcher ---
 case "${1:-}" in
   install) shift; cmd_install "$@";;
   setup) shift; cmd_setup "$@";;
@@ -552,5 +394,5 @@ case "${1:-}" in
   uninstall) shift; cmd_uninstall "$@";;
   version) echo "${APP} ${VERSION}";;
   menu|'') menu ;;
-  *) print_usage;;
+  *) echo "(Tip: run 'smart-ssl' to open the interactive menu.)" ;;
 esac
