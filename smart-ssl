@@ -434,7 +434,8 @@ cmd_remove() {
 
   read -rp "Also revoke and delete Let's Encrypt cert for '${dom}'? (y/N): " ans
   if [[ "${ans,,}" == "y" ]]; then
-    certbot delete --cert-name "$dom" || true
+    echo "[*] Deleting certbot lineage for ${dom}…"
+    certbot delete --cert-name "$dom" --non-interactive || true
     rm -f "/etc/letsencrypt/renewal/${dom}.conf" 2>/dev/null || true
   fi
 
@@ -468,29 +469,38 @@ cmd_uninstall() {
   read -rp "Proceed? (y/N): " ans
   [[ "${ans,,}" == "y" ]] || { echo "Aborted."; return 0; }
 
-  # Remove deploy hook
+  # Remove deploy hook first
+  echo "[*] Removing deploy hook…"
   rm -f "/etc/letsencrypt/renewal-hooks/deploy/99-${APP}-deploy" 2>/dev/null || true
   rm -f "/usr/local/bin/${APP}-deploy" 2>/dev/null || true
 
-  # Remember managed domains before removing configs (for optional cert deletion)
+  # Capture managed domains before removing configs
   shopt -s nullglob
   mapfile -t _doms < <(grep -h '^domain=' "${DOM_DIR}"/*.conf 2>/dev/null | cut -d= -f2 || true)
   shopt -u nullglob
 
+  echo "[*] Removing Smart-SSL config directory…"
   rm -rf "$CONF_DIR" 2>/dev/null || true
+
+  echo "[*] Removing Cloudflare token file (if present)…"
   rm -f "$CF_CREDS" 2>/dev/null || true
 
   read -rp "Also delete issued Let's Encrypt certificates for managed domains? (y/N): " purge
   if [[ "${purge,,}" == "y" ]]; then
     for d in "${_doms[@]}"; do
-      [[ -n "$d" ]] && certbot delete --cert-name "$d" || true
+      [[ -n "$d" ]] || continue
+      echo "   - Deleting certbot lineage for ${d}…"
+      certbot delete --cert-name "$d" --non-interactive || true
       rm -f "/etc/letsencrypt/renewal/${d}.conf" 2>/dev/null || true
     done
   fi
 
+  echo "[*] Removing Smart-SSL binary…"
   rm -f "$SMARTSSL_BIN" 2>/dev/null || true
-  echo "[*] Uninstalled."
+  echo "[*] Uninstalled. (This session will exit now.)"
+  exit 0
 }
+
 
 menu() {
   ensure_root; ensure_paths; read_conf
