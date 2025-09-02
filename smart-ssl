@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="0.8.0"
+VERSION="0.8.1"
 
 # --- Update source (for self-update) ---
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
@@ -321,7 +321,7 @@ cmd_publish() {
   echo "[*] Published to ${DOM_publish_path} and hooks executed."
 }
 
-# Change publish path for an existing domain and publish immediately
+# ------- Numbered selector used by 6 & 9 -------
 _select_domain_from_list() {
   shopt -s nullglob
   mapfile -t files < <(printf "%s\n" "${DOM_DIR}"/*.conf 2>/dev/null || true)
@@ -349,6 +349,7 @@ _select_domain_from_list() {
   return 0
 }
 
+# --- 6) Change publish path & publish now (shows numbered list) ---
 cmd_change_publish() {
   ensure_root; ensure_paths
   local file; file="$(_select_domain_from_list)" || return 0
@@ -356,14 +357,16 @@ cmd_change_publish() {
   local curr; curr=$(grep '^publish_path=' "$file" | cut -d= -f2)
   read -rp "New publish path for '${dom}' (empty=use LE path only) [${curr}]: " np
   np="${np:-$curr}"
-  # update config
   sed -i "s|^publish_path=.*|publish_path=${np}|" "$file"
   echo "[*] Updated. Publishing now…"
   cmd_publish "$dom"
 }
 
-cmd_enable_renew() {
-  ensure_root
+# --- 7) Enable auto-renew + let user raise propagation seconds; update renewal *.conf; dry-run ---
+cmd_enable_renew_and_test() {
+  ensure_root; ensure_paths; read_conf
+
+  # Create deploy hook
   local hook="/usr/local/bin/${APP}-deploy"
   cat >"$hook" <<'EOF'
 #!/usr/bin/env bash
@@ -380,11 +383,42 @@ done
 shopt -u nullglob
 EOF
   chmod 0755 "$hook"
-
   mkdir -p /etc/letsencrypt/renewal-hooks/deploy
   ln -sfn "$hook" "/etc/letsencrypt/renewal-hooks/deploy/99-${APP}-deploy"
   systemctl enable --now certbot.timer || true
   echo "[*] Auto-renew enabled with deploy hook."
+
+  # Let user adjust propagation seconds for renewals
+  local current_ps="${CFG_PROPAGATION_SECONDS:-90}"
+  read -rp "Propagation seconds for DNS validation during renewals [${current_ps}]: " newps
+  newps="${newps:-$current_ps}"
+  # Update global default
+  sed -i "s|^propagation_seconds=.*|propagation_seconds=${newps}|" "$MAIN_CONF"
+
+  # Update each renewal file that uses dns-cloudflare
+  shopt -s nullglob
+  for r in /etc/letsencrypt/renewal/*.conf; do
+    grep -q '^\s*authenticator\s*=\s*dns-cloudflare' "$r" || continue
+    if grep -q '^\s*dns_cloudflare_propagation_seconds\s*=' "$r"; then
+      sed -i "s/^\s*dns_cloudflare_propagation_seconds\s*=.*/dns_cloudflare_propagation_seconds = ${newps}/" "$r"
+    else
+      # try to add inside [renewalparams]; if not present, append at end
+      if grep -q '^\[renewalparams\]' "$r"; then
+        awk -v ps="${newps}" '
+          BEGIN{done=0}
+          /^\[renewalparams\]/ {print; print "dns_cloudflare_propagation_seconds = " ps; done=1; next}
+          {print}
+          END{if(!done) print "dns_cloudflare_propagation_seconds = " ps}
+        ' "$r" > "${r}.tmp" && mv "${r}.tmp" "$r"
+      else
+        echo "dns_cloudflare_propagation_seconds = ${newps}" >> "$r"
+      fi
+    fi
+  done
+  shopt -u nullglob
+
+  echo "Saving debug log to /var/log/letsencrypt/letsencrypt.log"
+  certbot renew --dry-run || true
 }
 
 cmd_rotate_token() {
@@ -403,7 +437,7 @@ cmd_rotate_token() {
 
 cmd_dry_run() { certbot renew --dry-run; }
 
-# Numbered removal UI
+# --- 9) Remove (numbered) ---
 cmd_remove() {
   ensure_root; ensure_paths
   local file; file="$(_select_domain_from_list)" || return 0
@@ -491,7 +525,7 @@ menu() {
       4) cmd_add_staging; read -rp "Press Enter to continue..." _ ;;
       5) cmd_list; read -rp "Press Enter to continue..." _ ;;
       6) cmd_change_publish; read -rp "Press Enter to continue..." _ ;;
-      7) cmd_enable_renew; cmd_dry_run; read -rp "Press Enter to continue..." _ ;;
+      7) cmd_enable_renew_and_test; read -rp "Press Enter to continue..." _ ;;
       8) cmd_rotate_token; read -rp "Press Enter to continue..." _ ;;
       9) cmd_remove; read -rp "Press Enter to continue..." _ ;;
       10) cmd_self_update ;;   # restarts into new version
@@ -510,7 +544,7 @@ case "${1:-}" in
   add-staging) shift; cmd_add_staging "$@";;
   list) shift; cmd_list "$@";;
   publish) shift; cmd_publish "${1:-}";;
-  enable-renew) shift; cmd_enable_renew "$@";;
+  enable-renew) shift; cmd_enable_renew_and_test "$@";;
   rotate-token) shift; cmd_rotate_token "$@";;
   dry-run) shift; cmd_dry_run "$@";;
   remove) shift; cmd_remove "$@";;
