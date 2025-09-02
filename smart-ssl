@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="0.7.0"
+VERSION="0.7.1"
 
 # --- Update source (for self-update) ---
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
@@ -49,8 +49,8 @@ ${APP} ${VERSION}
 Commands:
   install                 Install/check dependencies
   setup                   First-time setup (email, Cloudflare token)
-  add                     Issue certificate (PRODUCTION)  [prompts: domain, mode, publish path]
-  add-staging             Issue certificate (STAGING / TEST; no rate limits)
+  add                     Issue certificate (PRODUCTION)
+  add-staging             Issue certificate (STAGING / TEST)
   list                    List managed domains + expiry
   publish <domain>        Copy/symlink certs to custom path & run reload hooks
   enable-renew            Install deploy hook + enable certbot.timer
@@ -79,10 +79,10 @@ check_deps() {
 domain_conf_path() { echo "${DOM_DIR}/$1.conf"; }
 lineage_path()     { echo "/etc/letsencrypt/live/$1"; }
 
-_valid_email() { [[ "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; }
+_valid_email()  { [[ "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; }
 _valid_domain() { [[ "$1" =~ ^([a-zA-Z0-9]([-a-zA-Z0-9]*[a-zA-Z0-9])?\.)+[A-Za-z]{2,}$ ]]; }
 
-# Parse token from the creds file used by certbot-dns-cloudflare
+# Parse token from certbot-dns-cloudflare creds
 _cf_read_token() {
   [[ -r "$CFG_CREDS" ]] || return 2
   local t
@@ -91,9 +91,7 @@ _cf_read_token() {
   printf '%s' "$t"
 }
 
-# Find Cloudflare zone for a given domain using the token.
-# Returns 0 and prints "zone_name zone_id" if found.
-# Returns 1 if not found, 2 if token missing/bad, 3 if API error.
+# Cloudflare zone lookup; prints "zone_name zone_id" if found
 _cf_find_zone() {
   local dom="$1" token; token="$(_cf_read_token)" || return 2
   local candidate="$dom" resp id
@@ -192,7 +190,6 @@ _issue_cert() {
     ${staging_flag} ${certname_flag} ${force_flag}
 }
 
-# Simplified issuance: only Domain, Mode, Publish path; CF zone + existing cert checks; save config only on success
 cmd_add_common() {
   local staging="${1:-0}"
 
@@ -226,7 +223,7 @@ cmd_add_common() {
 
   read -rp "Publish path (empty=use LE path only): " pub
 
-  # Existing cert pre-check (production and staging)
+  # Existing cert pre-check (prod or staging)
   local force_flag=""
   if _check_existing_cert "$dom" "$staging"; then
     read -rp "Force re-issue anyway? (y/N): " ans
@@ -289,7 +286,8 @@ cmd_list() {
     printf -- "- %-30s [%s]  publish: %-15s  expires: %s\n" "$d" "$mode" "${pub:-<LE path>}" "$exp"
   done
   shopt -u nullglob
-  (( any == 0 )) && echo "(no managed domains yet)"
+  if (( any == 0 )); then echo "(no managed domains yet)"; fi
+  return 0   # always succeed so menu doesn't exit with -e
 }
 
 cmd_publish() {
@@ -364,7 +362,6 @@ cmd_rotate_token() {
 
 cmd_dry_run() { certbot renew --dry-run; }
 
-# Numbered removal UI
 cmd_remove() {
   ensure_root; ensure_paths
   shopt -s nullglob
@@ -405,17 +402,14 @@ cmd_self_update() {
   ensure_root
   local tmp; tmp="$(mktemp)"
   local url="${SMARTSSL_RAW_BASE}/smart-ssl"
-
   echo "[*] Fetching latest Smart-SSL from: ${url}"
   if ! curl -fsSL "$url" -o "$tmp"; then
     rm -f "$tmp"; die "Download failed."
   fi
   grep -q '^APP="smart-ssl"$' "$tmp" || { rm -f "$tmp"; die "Downloaded file doesn't look like smart-ssl."; }
-
   echo "[*] Installing to ${SMARTSSL_BIN}"
   install -m 0755 "$tmp" "$SMARTSSL_BIN"
   rm -f "$tmp"
-
   echo "[*] Updated. Restarting Smart-SSL…"
   exec "$SMARTSSL_BIN" menu
 }
@@ -453,6 +447,7 @@ cmd_uninstall() {
 
 menu() {
   ensure_root; ensure_paths; read_conf
+  set +e   # keep the interactive loop alive even if a command returns non-zero
   while true; do
     clear
     echo "=== Smart-SSL Main Menu ==="
@@ -484,10 +479,11 @@ menu() {
       10) cmd_remove; read -rp "Press Enter to continue..." _ ;;
       11) cmd_self_update ;;   # restarts into new version
       12) cmd_uninstall ;;     # exits after uninstall
-      0) clear; exit 0 ;;
+      0) clear; set -e; exit 0 ;;
       *) echo "Invalid option"; sleep 1 ;;
     esac
   done
+  # (not reached) set -e   # would restore errexit here if loop ever ended
 }
 
 # --- dispatcher ---
