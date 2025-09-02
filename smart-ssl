@@ -443,6 +443,7 @@ cmd_remove() {
   echo "[*] Removed domain '${dom}'."
 }
 
+
 cmd_self_update() {
   ensure_root
   local tmp; tmp="$(mktemp)"
@@ -460,6 +461,7 @@ cmd_self_update() {
 
 cmd_uninstall() {
   ensure_root
+
   echo "This will remove Smart-SSL from this server."
   echo " - Binary: ${SMARTSSL_BIN}"
   echo " - Config dir: ${CONF_DIR} (including per-domain configs)"
@@ -469,35 +471,50 @@ cmd_uninstall() {
   read -rp "Proceed? (y/N): " ans
   [[ "${ans,,}" == "y" ]] || { echo "Aborted."; return 0; }
 
-  # Remove deploy hook first
+  set +e  # don't abort on any single failure
+
+  # 1) Remove deploy hook files
   echo "[*] Removing deploy hook…"
-  rm -f "/etc/letsencrypt/renewal-hooks/deploy/99-${APP}-deploy" 2>/dev/null || true
-  rm -f "/usr/local/bin/${APP}-deploy" 2>/dev/null || true
+  rm -f "/etc/letsencrypt/renewal-hooks/deploy/99-${APP}-deploy" 2>/dev/null
+  rm -f "/usr/local/bin/${APP}-deploy" 2>/dev/null
 
-  # Capture managed domains before removing configs
+  # 2) Collect managed domains BEFORE deleting configs
+  echo "[*] Collecting managed domains…"
   shopt -s nullglob
-  mapfile -t _doms < <(grep -h '^domain=' "${DOM_DIR}"/*.conf 2>/dev/null | cut -d= -f2 || true)
+  local files=( "${DOM_DIR}"/*.conf )
   shopt -u nullglob
+  local doms=()
+  for f in "${files[@]}"; do
+    [[ -f "$f" ]] || continue
+    doms+=( "$(grep -E '^domain=' "$f" | cut -d= -f2)" )
+  done
+  echo "    Found: ${#doms[@]} domain(s)"
 
+  # 3) Remove config dir + token file
   echo "[*] Removing Smart-SSL config directory…"
-  rm -rf "$CONF_DIR" 2>/dev/null || true
+  rm -rf "$CONF_DIR" 2>/dev/null
 
   echo "[*] Removing Cloudflare token file (if present)…"
-  rm -f "$CF_CREDS" 2>/dev/null || true
+  rm -f "$CF_CREDS" 2>/dev/null
 
-  read -rp "Also delete issued Let's Encrypt certificates for managed domains? (y/N): " purge
-  if [[ "${purge,,}" == "y" ]]; then
-    for d in "${_doms[@]}"; do
-      [[ -n "$d" ]] || continue
-      echo "   - Deleting certbot lineage for ${d}…"
-      certbot delete --cert-name "$d" --non-interactive || true
-      rm -f "/etc/letsencrypt/renewal/${d}.conf" 2>/dev/null || true
-    done
+  # 4) Optional: delete LE certs
+  if ((${#doms[@]})); then
+    read -rp "Also delete Let's Encrypt certificates for: ${doms[*]} ? (y/N): " purge
+    if [[ "${purge,,}" == "y" ]]; then
+      for d in "${doms[@]}"; do
+        [[ -n "$d" ]] || continue
+        echo "   - Deleting certbot lineage for ${d}…"
+        certbot delete --cert-name "$d" --non-interactive || true
+        rm -f "/etc/letsencrypt/renewal/${d}.conf" 2>/dev/null || true
+      done
+    fi
   fi
 
+  # 5) Remove binary last
   echo "[*] Removing Smart-SSL binary…"
-  rm -f "$SMARTSSL_BIN" 2>/dev/null || true
-  echo "[*] Uninstalled. (This session will exit now.)"
+  rm -f "$SMARTSSL_BIN" 2>/dev/null
+
+  echo "[*] Uninstalled. (Exiting.)"
   exit 0
 }
 
