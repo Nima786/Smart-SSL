@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="0.3.0"
+VERSION="0.4.0"
 
 # --- Update source (for self-update) ---
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
@@ -50,6 +50,7 @@ Commands:
   install                 Install/check dependencies
   setup                   First-time setup (email, Cloudflare token)
   add                     Add/issue a domain (simple or wildcard), optional publish+reload
+  add-staging             TEST issue using Let's Encrypt STAGING (no rate limits, not trusted)
   list                    List managed domains + expiry
   publish <domain>        Copy/symlink certs to custom path & run reload hooks
   enable-renew            Install deploy hook + enable certbot.timer
@@ -94,10 +95,11 @@ cmd_setup() {
 
   mkdir -p "$(dirname "$CF_CREDS")"
 
-  # Prefer env var if provided; otherwise hidden prompt (press ENTER, no Ctrl-D)
+  # Prefer env var if provided; otherwise visible prompt (no Ctrl-D)
   token="${SMARTSSL_CF_TOKEN:-}"
   if [[ -z "$token" ]]; then
-    read -rsp "Cloudflare API token (paste then ENTER): " token; echo
+    read -rp "Cloudflare API token (paste then ENTER): " token
+    echo
   fi
   token="${token//$'\r'/}"
   [[ -n "$token" ]] || die "Token cannot be empty."
@@ -112,7 +114,36 @@ cmd_setup() {
   echo "[*] Setup complete."
 }
 
-cmd_add() {
+_build_dargs_from_conf() {
+  local dom="$1" mode="$2" sans="$3"
+  local -a out=()
+  if [[ "$mode" == "wildcard" ]]; then
+    out+=("-d" "${dom}" "-d" "*.${dom}")
+  else
+    out+=("-d" "${dom}")
+  fi
+  IFS=',' read -ra extras <<< "$sans"
+  for s in "${extras[@]}"; do
+    s="$(echo "$s" | xargs)"
+    [[ -n "$s" ]] && out+=("-d" "$s")
+  done
+  printf '%s\n' "${out[@]}"
+}
+
+_issue_cert() {
+  local staging_flag="$1"; shift
+  certbot certonly \
+    --dns-cloudflare \
+    --dns-cloudflare-credentials "${CFG_CREDS}" \
+    --dns-cloudflare-propagation-seconds "${CFG_PROPAGATION_SECONDS}" \
+    "$@" \
+    -m "${CFG_EMAIL}" --agree-tos --no-eff-email --non-interactive \
+    ${staging_flag}
+}
+
+cmd_add_common() {
+  local staging="${1:-0}"
+
   ensure_root; ensure_paths; read_conf; check_deps
   read -rp "Domain (e.g., vpn.example.com or example.com): " dom
   read -rp "Mode (simple|wildcard) [simple]: " mode; mode="${mode:-simple}"
@@ -135,24 +166,19 @@ cert_mode=644
 chain_mode=${chn}
 EOF
 
-  dargs=()
-  if [[ "$mode" == "wildcard" ]]; then
-    dargs+=("-d" "${dom}" "-d" "*.${dom}")
-  else
-    dargs+=("-d" "${dom}")
+  mapfile -t dargs < <(_build_dargs_from_conf "$dom" "$mode" "$sans")
+  local flag=""
+  if [[ "$staging" == "1" ]]; then
+    echo "[*] Using Let's Encrypt STAGING (test only; not trusted by browsers/clients)."
+    flag="--staging"
   fi
-  IFS=',' read -ra extras <<< "${sans}"
-  for s in "${extras[@]}"; do s=$(echo "$s" | xargs); [[ -n "$s" ]] && dargs+=("-d" "$s"); done
-
-  certbot certonly \
-    --dns-cloudflare \
-    --dns-cloudflare-credentials "${CFG_CREDS}" \
-    --dns-cloudflare-propagation-seconds "${CFG_PROPAGATION_SECONDS}" \
-    "${dargs[@]}" \
-    -m "${CFG_EMAIL}" --agree-tos --no-eff-email --non-interactive
+  _issue_cert "$flag" "${dargs[@]}"
 
   [[ -n "$pub" ]] && cmd_publish "$dom" || echo "[*] Issued. Using LE live path."
 }
+
+cmd_add() { cmd_add_common 0; }
+cmd_add_staging() { cmd_add_common 1; }
 
 cmd_list() {
   ensure_paths
@@ -230,7 +256,8 @@ cmd_rotate_token() {
   ensure_root; ensure_paths; read_conf
   token="${SMARTSSL_CF_TOKEN:-}"
   if [[ -z "$token" ]]; then
-    read -rsp "New Cloudflare API token (paste then ENTER): " token; echo
+    read -rp "New Cloudflare API token (paste then ENTER): " token
+    echo
   fi
   token="${token//$'\r'/}"
   [[ -n "$token" ]] || die "Token cannot be empty."
@@ -311,15 +338,16 @@ menu() {
     echo "=== Smart-SSL Main Menu ==="
     echo "1) Install dependencies"
     echo "2) Setup (email + Cloudflare token)"
-    echo "3) Add / Issue certificate"
-    echo "4) List managed domains"
-    echo "5) Publish cert to custom path (reload hooks)"
-    echo "6) Enable auto-renew (deploy hook + certbot.timer)"
-    echo "7) Dry-run renewal test"
-    echo "8) Rotate Cloudflare token"
-    echo "9) Remove a domain"
-    echo "10) Update Smart-SSL to latest"
-    echo "11) Uninstall Smart-SSL"
+    echo "3) Add / Issue certificate (PRODUCTION)"
+    echo "4) Add / Issue certificate (STAGING / TEST)"
+    echo "5) List managed domains"
+    echo "6) Publish cert to custom path (reload hooks)"
+    echo "7) Enable auto-renew (deploy hook + certbot.timer)"
+    echo "8) Dry-run renewal test"
+    echo "9) Rotate Cloudflare token"
+    echo "10) Remove a domain"
+    echo "11) Update Smart-SSL to latest"
+    echo "12) Uninstall Smart-SSL"
     echo "0) Exit"
     echo
     read -rp "Select an option: " choice
@@ -327,14 +355,15 @@ menu() {
       1) cmd_install; read -rp "Press Enter to continue..." _ ;;
       2) cmd_setup; read -rp "Press Enter to continue..." _ ;;
       3) cmd_add; read -rp "Press Enter to continue..." _ ;;
-      4) cmd_list; read -rp "Press Enter to continue..." _ ;;
-      5) read -rp "Domain to publish: " d; cmd_publish "$d"; read -rp "Press Enter to continue..." _ ;;
-      6) cmd_enable_renew; read -rp "Press Enter to continue..." _ ;;
-      7) cmd_dry_run; read -rp "Press Enter to continue..." _ ;;
-      8) cmd_rotate_token; read -rp "Press Enter to continue..." _ ;;
-      9) cmd_remove; read -rp "Press Enter to continue..." _ ;;
-      10) cmd_self_update ;;   # restarts into new version
-      11) cmd_uninstall ;;     # exits after uninstall
+      4) cmd_add_staging; read -rp "Press Enter to continue..." _ ;;
+      5) cmd_list; read -rp "Press Enter to continue..." _ ;;
+      6) read -rp "Domain to publish: " d; cmd_publish "$d"; read -rp "Press Enter to continue..." _ ;;
+      7) cmd_enable_renew; read -rp "Press Enter to continue..." _ ;;
+      8) cmd_dry_run; read -rp "Press Enter to continue..." _ ;;
+      9) cmd_rotate_token; read -rp "Press Enter to continue..." _ ;;
+      10) cmd_remove; read -rp "Press Enter to continue..." _ ;;
+      11) cmd_self_update ;;   # restarts into new version
+      12) cmd_uninstall ;;     # exits after uninstall
       0) clear; exit 0 ;;
       *) echo "Invalid option"; sleep 1 ;;
     esac
@@ -346,6 +375,7 @@ case "${1:-}" in
   install) shift; cmd_install "$@";;
   setup) shift; cmd_setup "$@";;
   add) shift; cmd_add "$@";;
+  add-staging) shift; cmd_add_staging "$@";;
   list) shift; cmd_list "$@";;
   publish) shift; cmd_publish "${1:-}";;
   enable-renew) shift; cmd_enable_renew "$@";;
