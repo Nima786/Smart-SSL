@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Smart-SSL v1.2.4
+# Smart-SSL v1.2.5
 
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="1.2.4"
+VERSION="1.2.5"
 
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
 SMARTSSL_BRANCH="${SMARTSSL_BRANCH:-main}"
@@ -140,33 +140,32 @@ cmd_setup() {
     [[ "${ans,,}" == "y" ]] || { echo "[*] Leaving setup unchanged."; return 0; }
   fi
 
-# Email (placeholder shown; keep existing if user presses Enter and one exists)
-local email="${CFG_EMAIL:-}"
-while true; do
-  if [[ -n "$email" ]]; then
-    read -rp "Let's Encrypt email (e.g., example@gmail.com) [leave blank to keep current]: " in || true
-    [[ -n "$in" ]] && email="$in"
-    _valid_email "$email" && break
-    echo "Invalid email format, try again."
-  else
-    read -rp "Let's Encrypt email (e.g., example@gmail.com): " in || true
-    [[ -n "$in" ]] && email="$in"
-    _valid_email "$email" && break
-    echo "Invalid email format, try again."
+  # Email (placeholder shown; keep existing if user presses Enter and one exists)
+  local email="${CFG_EMAIL:-}"
+  while true; do
+    if [[ -n "$email" ]]; then
+      read -rp "Let's Encrypt email (e.g., example@gmail.com) [leave blank to keep current]: " in || true
+      [[ -n "$in" ]] && email="$in"
+      _valid_email "$email" && break
+      echo "Invalid email format, try again."
+    else
+      read -rp "Let's Encrypt email (e.g., example@gmail.com): " in || true
+      [[ -n "$in" ]] && email="$in"
+      _valid_email "$email" && break
+      echo "Invalid email format, try again."
+    fi
+  done
+  sed -i "s|^email=.*|email=${email}|" "$MAIN_CONF"
+
+  # CF token (blank = keep current if present, or just skip silently)
+  local had_token="no"; _cf_read_token >/dev/null 2>&1 && had_token="yes"
+  read -rp "Cloudflare API token (leave empty to keep current/skip): " token || true
+  if [[ -n "$token" ]]; then
+    mkdir -p "$(dirname "$CF_CREDS")"
+    printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDS"
+    chmod 600 "$CF_CREDS"
+    echo "[*] Saved token to ${CF_CREDS}"
   fi
-done
-sed -i "s|^email=.*|email=${email}|" "$MAIN_CONF"
-
-
-# CF token (blank = keep current if present, or just skip silently)
-local had_token="no"; _cf_read_token >/dev/null 2>&1 && had_token="yes"
-read -rp "Cloudflare API token (leave empty to keep current/skip): " token || true
-if [[ -n "$token" ]]; then
-  mkdir -p "$(dirname "$CF_CREDS")"
-  printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDS"
-  chmod 600 "$CF_CREDS"
-  echo "[*] Saved token to ${CF_CREDS}"
-fi
 
   systemctl enable --now certbot.timer || true
 
@@ -467,7 +466,6 @@ _domains_from_live_cert() {
   [[ -f "$cert" ]] || { echo ""; return 0; }
 
   # Extract SANs robustly; output space-separated list of DNS names
-  # Works on common OpenSSL builds; falls back gracefully.
   local sans
   sans="$(openssl x509 -noout -text -in "$cert" 2>/dev/null \
         | awk '/Subject Alternative Name/{flag=1; next} /X509v3/{flag=0} flag' \
@@ -475,7 +473,6 @@ _domains_from_live_cert() {
         | tr '\n' ' ' | sed 's/[[:space:]]\+$//')"
   echo "${sans}"
 }
-
 
 cmd_import_existing() {
   ensure_root; ensure_paths
@@ -514,37 +511,48 @@ cmd_convert_to_cf() {
   mapfile -t LINS < <(_list_lineages_real)
   (( ${#LINS[@]} )) || { echo "(no real certbot lineages)"; return 0; }
 
-local pick; pick="$(_pick_from_array LINS)" || { echo "Cancelled."; return 0; }
+  local pick; pick="$(_pick_from_array LINS)" || { echo "Cancelled."; return 0; }
 
-# Try renewal file first, then fall back to SANs in the live cert
-local names
-names="$(_domains_from_renewal "$pick" 2>/dev/null)"
-if [[ -z "$names" ]]; then
-  names="$(_domains_from_live_cert "$pick")"
-fi
-if [[ -z "$names" ]]; then
-  echo "[!] Could not determine domain list for '${pick}' from renewal file or live certificate."
-  echo "    Ensure the certificate exists at /etc/letsencrypt/live/${pick}/cert.pem, or import via option 10."
-  return 0
-fi
+  # Try renewal file first, then fall back to SANs in the live cert
+  local names
+  names="$(_domains_from_renewal "$pick" 2>/dev/null)"
+  if [[ -z "$names" ]]; then
+    echo "[*] Renewal file missing domains; using SANs from live certificate…"
+    names="$(_domains_from_live_cert "$pick")"
+  fi
+  if [[ -z "$names" ]]; then
+    echo "[!] Could not determine domain list for '${pick}' from renewal file or live certificate."
+    echo "    Ensure the certificate exists at /etc/letsencrypt/live/${pick}/cert.pem, or import via option 10."
+    return 0
+  fi
 
-echo "[*] Reissuing '${pick}' with Cloudflare DNS (propagation ${ps}s)…"
-set +e
-certbot certonly \
-  --dns-cloudflare \
-  --dns-cloudflare-credentials "$CF_CREDS" \
-  --dns-cloudflare-propagation-seconds "$ps" \
-  --cert-name "$pick" \
-  ${dargs[@]+"${dargs[@]}"} \
-  -m "${CFG_EMAIL}" --agree-tos --no-eff-email --non-interactive \
-  --force-renewal
-rc=$?
-set -e
-if (( rc != 0 )); then
-  echo "[!] Reissue failed (exit $rc)."
-  return 0
-fi
+  # Build -d args from names
+  local -a dargs=()
+  local n
+  for n in $names; do
+    dargs+=(-d "$n")
+  done
 
+  # Ensure propagation seconds has a safe default
+  local ps="${CFG_PROPAGATION_SECONDS:-$DEFAULT_PROPAGATION}"
+  [[ -z "${ps:-}" || "$ps" == "0" ]] && ps="$DEFAULT_PROPAGATION"
+
+  echo "[*] Reissuing '${pick}' with Cloudflare DNS (propagation ${ps}s)…"
+  set +e
+  certbot certonly \
+    --dns-cloudflare \
+    --dns-cloudflare-credentials "$CF_CREDS" \
+    --dns-cloudflare-propagation-seconds "$ps" \
+    --cert-name "$pick" \
+    ${dargs[@]+"${dargs[@]}"} \
+    -m "${CFG_EMAIL}" --agree-tos --no-eff-email --non-interactive \
+    --force-renewal
+  local rc=$?
+  set -e
+  if (( rc != 0 )); then
+    echo "[!] Reissue failed (exit $rc)."
+    return 0
+  fi
 
   echo "[*] Converted '${pick}' to Cloudflare DNS."
   if [[ -f "$(domain_conf_path "$pick")" ]]; then
@@ -583,15 +591,15 @@ cmd_uninstall() {
   rm -f "/usr/local/bin/${APP}-deploy" 2>/dev/null
 
   echo "[*] Collecting managed domains…"
-shopt -s nullglob
-conf_files=("${DOM_DIR}"/*.conf)
-shopt -u nullglob
+  shopt -s nullglob
+  conf_files=("${DOM_DIR}"/*.conf)
+  shopt -u nullglob
 
-_doms=()
-if ((${#conf_files[@]})); then
-  mapfile -t _doms < <(grep -h '^domain=' "${conf_files[@]}" 2>/dev/null | cut -d= -f2)
-fi
-echo "    Found: ${#_doms[@]} domain(s)"
+  _doms=()
+  if ((${#conf_files[@]})); then
+    mapfile -t _doms < <(grep -h '^domain=' "${conf_files[@]}" 2>/dev/null | cut -d= -f2)
+  fi
+  echo "    Found: ${#_doms[@]} domain(s)"
 
   echo "[*] Removing Smart-SSL config directory…"
   rm -rf "$CONF_DIR" 2>/dev/null
@@ -606,6 +614,32 @@ echo "    Found: ${#_doms[@]} domain(s)"
         echo "   - Deleting certbot lineage for ${d}…"
         certbot delete --cert-name "$d" --non-interactive || true
         rm -f "/etc/letsencrypt/renewal/${d}.conf" 2>/dev/null || true
+      done
+    fi
+  fi
+
+  # Orphan lineages (not managed by Smart-SSL), e.g., *-staging
+  shopt -s nullglob
+  mapfile -t all_lins < <(for d in /etc/letsencrypt/live/*; do [[ -f "$d/cert.pem" ]] && basename "$d"; done)
+  shopt -u nullglob
+
+  declare -A managed_set=()
+  for d in "${_doms[@]}"; do managed_set["$d"]=1; done
+
+  orphans=()
+  for lin in "${all_lins[@]}"; do
+    [[ -z "${managed_set[$lin]:-}" ]] && orphans+=("$lin")
+  done
+
+  if ((${#orphans[@]})); then
+    echo "[*] Orphaned Let's Encrypt lineages (not managed by Smart-SSL): ${orphans[*]}"
+    read -rp "Delete these as well (including any *-staging)? (y/N): " del_orphans
+    if [[ "${del_orphans,,}" == "y" ]]; then
+      for o in "${orphans[@]}"; do
+        echo "   - Deleting lineage ${o}…"
+        certbot delete --cert-name "$o" --non-interactive || true
+        rm -f "/etc/letsencrypt/renewal/${o}.conf" 2>/dev/null || true
+        rm -rf "/etc/letsencrypt/live/${o}" "/etc/letsencrypt/archive/${o}" 2>/dev/null || true
       done
     fi
   fi
