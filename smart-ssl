@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Smart-SSL v1.2.1
+# Smart-SSL v1.2.2
 # Full features: CF DNS + Standard Certbot + Migration + self-update + uninstall
 
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="1.2.1"
+VERSION="1.2.2"
 
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
 SMARTSSL_BRANCH="${SMARTSSL_BRANCH:-main}"
@@ -121,6 +121,7 @@ cmd_install() { ensure_root; ensure_paths; check_deps; echo "[*] Dependencies in
 
 cmd_setup() {
   ensure_root; ensure_paths; read_conf; check_deps
+
   local email=""
   while true; do
     read -rp "Let's Encrypt email: " email
@@ -129,16 +130,15 @@ cmd_setup() {
   done
   sed -i "s|^email=.*|email=${email}|" "$MAIN_CONF"
 
-  read -rp "Add/Update Cloudflare API token now? (y/N): " ans || true
-  if [[ "${ans,,}" == "y" ]]; then
-    read -rp "Cloudflare API token: " token
-    [[ -n "$token" ]] || { echo "[!] Token empty; skipping CF."; }
-    if [[ -n "$token" ]]; then
-      mkdir -p "$(dirname "$CF_CREDS")"
-      printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDS"
-      chmod 600 "$CF_CREDS"
-      echo "[*] Saved token to ${CF_CREDS}"
-    fi
+  # No yes/no question — just ask once, allow blank to skip.
+  read -rp "Cloudflare API token (leave empty to skip): " token
+  if [[ -n "$token" ]]; then
+    mkdir -p "$(dirname "$CF_CREDS")"
+    printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDS"
+    chmod 600 "$CF_CREDS"
+    echo "[*] Saved token to ${CF_CREDS}"
+  else
+    echo "[*] Skipping Cloudflare; you can set it later with option 8."
   fi
 
   systemctl enable --now certbot.timer || true
@@ -423,7 +423,9 @@ _list_lineages_real() {
 }
 
 _domains_from_renewal() {
-  local nm="$1" rf="/etc/letsencrypt/renewal/${nm}.conf"
+  local nm="${1:-}"
+  [[ -n "$nm" ]] || return 1
+  local rf="/etc/letsencrypt/renewal/${nm}.conf"
   [[ -f "$rf" ]] || return 1
   grep -E '^\s*domains\s*=' "$rf" | sed 's/^[^=]*=\s*//' | tr ',' ' ' | tr -s ' '
 }
@@ -433,7 +435,6 @@ cmd_import_existing() {
   mapfile -t LINS < <(_list_lineages_real)
   (( ${#LINS[@]} )) || { echo "(no real certbot lineages found)"; return 0; }
 
-  # Exclude already-managed
   shopt -s nullglob
   mapfile -t managed < <(grep -h '^domain=' "${DOM_DIR}"/*.conf 2>/dev/null | cut -d= -f2 || true)
   shopt -u nullglob
