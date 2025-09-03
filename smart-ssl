@@ -460,6 +460,23 @@ _domains_from_renewal() {
   grep -E '^\s*domains\s*=' "$rf" | sed 's/^[^=]*=\s*//' | tr ',' ' ' | tr -s ' ' || true
 }
 
+_domains_from_live_cert() {
+  # Read DNS names (SANs) from the live certificate
+  local nm="${1:-}"
+  local cert="/etc/letsencrypt/live/${nm}/cert.pem"
+  [[ -f "$cert" ]] || { echo ""; return 0; }
+
+  # Extract SANs robustly; output space-separated list of DNS names
+  # Works on common OpenSSL builds; falls back gracefully.
+  local sans
+  sans="$(openssl x509 -noout -text -in "$cert" 2>/dev/null \
+        | awk '/Subject Alternative Name/{flag=1; next} /X509v3/{flag=0} flag' \
+        | tr -d ' ' | tr ',' '\n' | sed -n 's/^DNS://p' \
+        | tr '\n' ' ' | sed 's/[[:space:]]\+$//')"
+  echo "${sans}"
+}
+
+
 cmd_import_existing() {
   ensure_root; ensure_paths
   mapfile -t LINS < <(_list_lineages_real)
@@ -499,10 +516,15 @@ cmd_convert_to_cf() {
 
 local pick; pick="$(_pick_from_array LINS)" || { echo "Cancelled."; return 0; }
 
-# Always safe: empty string if we fail to parse
-local names; names="$(_domains_from_renewal "$pick" 2>/dev/null)"
+# Try renewal file first, then fall back to SANs in the live cert
+local names
+names="$(_domains_from_renewal "$pick" 2>/dev/null)"
 if [[ -z "$names" ]]; then
-  echo "[!] Could not read domains from renewal file for '${pick}'."
+  names="$(_domains_from_live_cert "$pick")"
+fi
+if [[ -z "$names" ]]; then
+  echo "[!] Could not determine domain list for '${pick}' from renewal file or live certificate."
+  echo "    Ensure the certificate exists at /etc/letsencrypt/live/${pick}/cert.pem, or import via option 10."
   return 0
 fi
 
