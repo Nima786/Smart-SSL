@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smart-SSL v1.2.3
+# Smart-SSL v1.2.4
 
 set -Eeuo pipefail
 
