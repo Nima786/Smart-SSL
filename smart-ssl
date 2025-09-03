@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Smart-SSL v1.2.2
-# Full features: CF DNS + Standard Certbot + Migration + self-update + uninstall
+# Smart-SSL v1.2.3
 
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="1.2.2"
+VERSION="1.2.3"
 
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
 SMARTSSL_BRANCH="${SMARTSSL_BRANCH:-main}"
@@ -119,30 +118,57 @@ _patch_renewal_files_ps() {
 # ---------- Install / Setup ----------
 cmd_install() { ensure_root; ensure_paths; check_deps; echo "[*] Dependencies installed/verified."; }
 
-cmd_setup() {
-  ensure_root; ensure_paths; read_conf; check_deps
+_setup_status() {
+  read_conf
+  local em_ok="no" cf_ok="no"
+  [[ -n "${CFG_EMAIL:-}" && "$(_valid_email "${CFG_EMAIL:-}")" ]] && em_ok="yes"
+  if token="$(_cf_read_token 2>/dev/null)" ; then cf_ok="yes"; else cf_ok="no"; fi
+  echo "$em_ok $cf_ok"
+}
 
-  local email=""
+cmd_setup() {
+  ensure_root; ensure_paths; check_deps
+  read_conf
+  read -r EM_OK CF_OK < <(_setup_status)
+
+  # If fully configured, offer to skip
+  if [[ "$EM_OK" == "yes" && "$CF_OK" == "yes" ]]; then
+    echo "[*] Already configured:"
+    echo "    - Email: ${CFG_EMAIL}"
+    echo "    - CF token: present"
+    read -rp "Reconfigure email/token? (y/N): " ans || true
+    [[ "${ans,,}" == "y" ]] || { echo "[*] Leaving setup unchanged."; return 0; }
+  fi
+
+  # Email (ask only if missing or user chose to reconfigure)
+  local email="${CFG_EMAIL:-}"
   while true; do
-    read -rp "Let's Encrypt email: " email
+    read -rp "Let's Encrypt email [${email:-none}]: " in || true
+    [[ -n "$in" ]] && email="$in"
     _valid_email "$email" && break
     echo "Invalid email format, try again."
   done
   sed -i "s|^email=.*|email=${email}|" "$MAIN_CONF"
 
-  # No yes/no question — just ask once, allow blank to skip.
-  read -rp "Cloudflare API token (leave empty to skip): " token
+  # CF token (single prompt; blank = skip/unchanged)
+  local had_token="no"; _cf_read_token >/dev/null 2>&1 && had_token="yes"
+  read -rp "Cloudflare API token (leave empty to skip): " token || true
   if [[ -n "$token" ]]; then
     mkdir -p "$(dirname "$CF_CREDS")"
     printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDS"
     chmod 600 "$CF_CREDS"
     echo "[*] Saved token to ${CF_CREDS}"
   else
-    echo "[*] Skipping Cloudflare; you can set it later with option 8."
+    if [[ "$had_token" == "yes" ]]; then
+      echo "[*] CF token: configured (unchanged)"
+    else
+      echo "[*] CF token: not set (you can add it later with option 8)."
+    fi
   fi
 
   systemctl enable --now certbot.timer || true
 
+  # Ensure deploy hook exists
   local hook="/usr/local/bin/${APP}-deploy"
   cat >"$hook" <<'EOF'
 #!/usr/bin/env bash
@@ -164,7 +190,11 @@ EOF
 
   echo "[*] Setup complete:"
   echo "    - Email: ${email}"
-  echo "    - CF token: $( [[ -f "$CF_CREDS" ]] && echo 'configured' || echo 'not set' )"
+  if _cf_read_token >/dev/null 2>&1; then
+    echo "    - CF token: configured"
+  else
+    echo "    - CF token: not set"
+  fi
   echo "    - Auto-renew: enabled (certbot.timer)"
 }
 
@@ -319,7 +349,6 @@ _select_domain_from_list() {
   printf '%s\n' "${files[$((choice-1))]}"
 }
 
-# copy array by name (no nameref)
 _pick_from_array() {
   local varname="$1"; shift || true
   local arr=()
@@ -423,8 +452,7 @@ _list_lineages_real() {
 }
 
 _domains_from_renewal() {
-  local nm="${1:-}"
-  [[ -n "$nm" ]] || return 1
+  local nm="${1:-}"; [[ -n "$nm" ]] || return 1
   local rf="/etc/letsencrypt/renewal/${nm}.conf"
   [[ -f "$rf" ]] || return 1
   grep -E '^\s*domains\s*=' "$rf" | sed 's/^[^=]*=\s*//' | tr ',' ' ' | tr -s ' '
@@ -468,8 +496,12 @@ cmd_convert_to_cf() {
   (( ${#LINS[@]} )) || { echo "(no real certbot lineages)"; return 0; }
 
   local pick; pick="$(_pick_from_array LINS)" || return 0
-  local names; names="$(_domains_from_renewal "$pick")"
-  [[ -n "$names" ]] || { echo "[!] Could not read domains from renewal file for '${pick}'."; return 0; }
+  # set -e safe command substitution:
+  local names; names="$(_domains_from_renewal "$pick" 2>/dev/null || echo "")"
+  if [[ -z "$names" ]]; then
+    echo "[!] Could not read domains from renewal file for '${pick}'."
+    return 0
+  fi
 
   local -a dargs=(); for n in $names; do dargs+=(-d "$n"); done
   local ps="${CFG_PROPAGATION_SECONDS:-$DEFAULT_PROPAGATION}"; [[ -z "$ps" || "$ps" == "0" ]] && ps="$DEFAULT_PROPAGATION"
