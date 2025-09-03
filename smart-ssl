@@ -561,10 +561,15 @@ cmd_uninstall() {
   rm -f "/usr/local/bin/${APP}-deploy" 2>/dev/null
 
   echo "[*] Collecting managed domains…"
-  shopt -s nullglob
-  mapfile -t _doms < <(grep -h '^domain=' "${DOM_DIR}"/*.conf 2>/dev/null | cut -d= -f2 || true)
-  shopt -u nullglob
-  echo "    Found: ${#_doms[@]} domain(s)"
+shopt -s nullglob
+conf_files=("${DOM_DIR}"/*.conf)
+shopt -u nullglob
+
+_doms=()
+if ((${#conf_files[@]})); then
+  mapfile -t _doms < <(grep -h '^domain=' "${conf_files[@]}" 2>/dev/null | cut -d= -f2)
+fi
+echo "    Found: ${#_doms[@]} domain(s)"
 
   echo "[*] Removing Smart-SSL config directory…"
   rm -rf "$CONF_DIR" 2>/dev/null
