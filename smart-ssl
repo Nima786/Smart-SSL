@@ -140,31 +140,33 @@ cmd_setup() {
     [[ "${ans,,}" == "y" ]] || { echo "[*] Leaving setup unchanged."; return 0; }
   fi
 
-  # Email (ask only if missing or user chose to reconfigure)
-  local email="${CFG_EMAIL:-}"
-  while true; do
-    read -rp "Let's Encrypt email [${email:-none}]: " in || true
+# Email (placeholder shown; keep existing if user presses Enter and one exists)
+local email="${CFG_EMAIL:-}"
+while true; do
+  if [[ -n "$email" ]]; then
+    read -rp "Let's Encrypt email (e.g., example@gmail.com) [leave blank to keep current]: " in || true
     [[ -n "$in" ]] && email="$in"
     _valid_email "$email" && break
     echo "Invalid email format, try again."
-  done
-  sed -i "s|^email=.*|email=${email}|" "$MAIN_CONF"
-
-  # CF token (single prompt; blank = skip/unchanged)
-  local had_token="no"; _cf_read_token >/dev/null 2>&1 && had_token="yes"
-  read -rp "Cloudflare API token (leave empty to skip): " token || true
-  if [[ -n "$token" ]]; then
-    mkdir -p "$(dirname "$CF_CREDS")"
-    printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDS"
-    chmod 600 "$CF_CREDS"
-    echo "[*] Saved token to ${CF_CREDS}"
   else
-    if [[ "$had_token" == "yes" ]]; then
-      echo "[*] CF token: configured (unchanged)"
-    else
-      echo "[*] CF token: not set (you can add it later with option 8)."
-    fi
+    read -rp "Let's Encrypt email (e.g., example@gmail.com): " in || true
+    [[ -n "$in" ]] && email="$in"
+    _valid_email "$email" && break
+    echo "Invalid email format, try again."
   fi
+done
+sed -i "s|^email=.*|email=${email}|" "$MAIN_CONF"
+
+
+# CF token (blank = keep current if present, or just skip silently)
+local had_token="no"; _cf_read_token >/dev/null 2>&1 && had_token="yes"
+read -rp "Cloudflare API token (leave empty to keep current/skip): " token || true
+if [[ -n "$token" ]]; then
+  mkdir -p "$(dirname "$CF_CREDS")"
+  printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDS"
+  chmod 600 "$CF_CREDS"
+  echo "[*] Saved token to ${CF_CREDS}"
+fi
 
   systemctl enable --now certbot.timer || true
 
@@ -452,10 +454,10 @@ _list_lineages_real() {
 }
 
 _domains_from_renewal() {
-  local nm="${1:-}"; [[ -n "$nm" ]] || return 1
+  local nm="${1:-}"
   local rf="/etc/letsencrypt/renewal/${nm}.conf"
-  [[ -f "$rf" ]] || return 1
-  grep -E '^\s*domains\s*=' "$rf" | sed 's/^[^=]*=\s*//' | tr ',' ' ' | tr -s ' '
+  [[ -n "$nm" && -f "$rf" ]] || { echo ""; return 0; }
+  grep -E '^\s*domains\s*=' "$rf" | sed 's/^[^=]*=\s*//' | tr ',' ' ' | tr -s ' ' || true
 }
 
 cmd_import_existing() {
@@ -495,29 +497,32 @@ cmd_convert_to_cf() {
   mapfile -t LINS < <(_list_lineages_real)
   (( ${#LINS[@]} )) || { echo "(no real certbot lineages)"; return 0; }
 
-  local pick; pick="$(_pick_from_array LINS)" || return 0
-  # set -e safe command substitution:
-  local names; names="$(_domains_from_renewal "$pick" 2>/dev/null || echo "")"
-  if [[ -z "$names" ]]; then
-    echo "[!] Could not read domains from renewal file for '${pick}'."
-    return 0
-  fi
+local pick; pick="$(_pick_from_array LINS)" || { echo "Cancelled."; return 0; }
 
-  local -a dargs=(); for n in $names; do dargs+=(-d "$n"); done
-  local ps="${CFG_PROPAGATION_SECONDS:-$DEFAULT_PROPAGATION}"; [[ -z "$ps" || "$ps" == "0" ]] && ps="$DEFAULT_PROPAGATION"
+# Always safe: empty string if we fail to parse
+local names; names="$(_domains_from_renewal "$pick" 2>/dev/null)"
+if [[ -z "$names" ]]; then
+  echo "[!] Could not read domains from renewal file for '${pick}'."
+  return 0
+fi
 
-  echo "[*] Reissuing '${pick}' with Cloudflare DNS (propagation ${ps}s)…"
-  if ! certbot certonly \
-      --dns-cloudflare \
-      --dns-cloudflare-credentials "$CF_CREDS" \
-      --dns-cloudflare-propagation-seconds "$ps" \
-      --cert-name "$pick" \
-      "${dargs[@]}" \
-      -m "${CFG_EMAIL}" --agree-tos --no-eff-email --non-interactive \
-      --force-renewal; then
-    echo "[!] Reissue failed."
-    return 0
-  fi
+echo "[*] Reissuing '${pick}' with Cloudflare DNS (propagation ${ps}s)…"
+set +e
+certbot certonly \
+  --dns-cloudflare \
+  --dns-cloudflare-credentials "$CF_CREDS" \
+  --dns-cloudflare-propagation-seconds "$ps" \
+  --cert-name "$pick" \
+  ${dargs[@]+"${dargs[@]}"} \
+  -m "${CFG_EMAIL}" --agree-tos --no-eff-email --non-interactive \
+  --force-renewal
+rc=$?
+set -e
+if (( rc != 0 )); then
+  echo "[!] Reissue failed (exit $rc)."
+  return 0
+fi
+
 
   echo "[*] Converted '${pick}' to Cloudflare DNS."
   if [[ -f "$(domain_conf_path "$pick")" ]]; then
