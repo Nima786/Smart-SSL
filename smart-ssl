@@ -317,10 +317,26 @@ cmd_publish() {
   source "$conf"
   local lineage="/etc/letsencrypt/live/${domain}"
   [[ -d "$lineage" ]] || { echo "[!] No LE lineage at ${lineage}"; return 0; }
-  if [[ -z "${publish_path}" ]]; then echo "[*] No publish path set; nothing to do."; return 0; fi
+
+  if [[ -z "${publish_path}" ]]; then
+    echo "[*] No publish path set; nothing to do."
+    return 0
+  fi
+
+  # Normalize path (strip trailing whitespace) and create it
+  publish_path="$(echo -n "$publish_path" | sed 's:[[:space:]]\+$::')"
   mkdir -p "${publish_path}"
+
+  # Copy files (not move) so LE stays canonical; set safe perms
   install -m "${DEFAULT_KEY_MODE}"  "${lineage}/privkey.pem"   "${publish_path}/privkey.pem"
   install -m "${DEFAULT_CERT_MODE}" "${lineage}/fullchain.pem" "${publish_path}/fullchain.pem"
+
+  # Helpful extras:
+  #  - Provide chain.pem for stacks that want it separately
+  #  - Provide Marzban-friendly key name as a symlink: key.pem -> privkey.pem
+  cp -f "${lineage}/chain.pem" "${publish_path}/chain.pem" 2>/dev/null || true
+  ln -sfn "${publish_path}/privkey.pem" "${publish_path}/key.pem"
+
   echo "[*] Published ${domain} → ${publish_path}"
 }
 
@@ -403,11 +419,30 @@ cmd_change_publish() {
   local dom curr
   dom=$(grep '^domain=' "$file" | cut -d= -f2)
   curr=$(grep '^publish_path=' "$file" | cut -d= -f2)
+
+  # Ask for new path
   read -rp "New publish path for '${dom}' (empty=use LE path only) [${curr}]: " np
   np="${np:-$curr}"
+
+  # Normalize and write
+  np="$(echo -n "$np" | sed 's:[[:space:]]\+$::')"
   sed -i "s|^publish_path=.*|publish_path=${np}|" "$file"
-  echo "[*] Updated. Publishing now…"
-  cmd_publish "$dom"
+
+  # Publish to the new path immediately
+  echo "[*] Publishing to new path…"
+  if cmd_publish "$dom"; then
+    # Offer to clean old path if it changed and looks like a directory
+    if [[ -n "$curr" && -n "$np" && "$curr" != "$np" && -d "$curr" ]]; then
+      echo "[*] Old path detected: ${curr}"
+      read -rp "Remove old copies of certs in '${curr}' (privkey.pem/key.pem/fullchain.pem/chain.pem)? (y/N): " rmold
+      if [[ "${rmold,,}" == "y" ]]; then
+        rm -f "${curr}/privkey.pem" "${curr}/key.pem" "${curr}/fullchain.pem" "${curr}/chain.pem" 2>/dev/null || true
+        echo "[*] Old files removed from ${curr}"
+      fi
+    fi
+  else
+    echo "[!] Publish failed; path updated in config but no files were copied."
+  fi
 }
 
 cmd_remove() {
