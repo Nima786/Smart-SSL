@@ -120,9 +120,18 @@ cmd_install() { ensure_root; ensure_paths; check_deps; echo "[*] Dependencies in
 
 _setup_status() {
   read_conf
-  local em_ok="no" cf_ok="no"
-  [[ -n "${CFG_EMAIL:-}" && "$(_valid_email "${CFG_EMAIL:-}")" ]] && em_ok="yes"
-  if token="$(_cf_read_token 2>/dev/null)" ; then cf_ok="yes"; else cf_ok="no"; fi
+  local em_ok=no cf_ok=no
+
+  # email is OK only if set and passes the validator
+  if [[ -n "${CFG_EMAIL:-}" ]] && _valid_email "${CFG_EMAIL}"; then
+    em_ok=yes
+  fi
+
+  # CF token OK if the creds file exists and contains a token
+  if _cf_read_token >/dev/null 2>&1; then
+    cf_ok=yes
+  fi
+
   echo "$em_ok $cf_ok"
 }
 
