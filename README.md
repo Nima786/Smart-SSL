@@ -1,3 +1,11 @@
+<p align="center">
+  <b>English</b> | <a href="README.fa.md">فارسی</a>
+</p>
+<hr>
+
+# Smart-SSL
+An interactive tool for managing Let’s Encrypt SSL certificates...
+
 # Smart-SSL
 
 _The intelligent Let's Encrypt & Cloudflare companion for seamless SSL certificate management._
