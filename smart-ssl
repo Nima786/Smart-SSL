@@ -794,8 +794,43 @@ _setup_brief_status() {
 
 # ---------- Menu ----------
 menu() {
-  ensure_root; ensure_paths; read_conf
+  ensure_root
+  ensure_paths
+  read_conf
   init_colors
+
+  # ---------- inline UI helpers (scoped to this function) ----------
+  _ui_init_box_chars() {
+    # Use Unicode box-drawing if available, else ASCII
+    if [ -t 1 ] && printf '┌' | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+      TL='┌'; TR='┐'; BL='└'; BR='┘'; H='─'; V='│'
+      TJ='┬'; BJ='┴'; LJ='├'; RJ='┤'; CJ='┼'
+    else
+      TL='+'; TR='+'; BL='+'; BR='+'
+      H='-'; V='|'; TJ='+'; BJ='+'; LJ='+'; RJ='+'; CJ='+'
+    fi
+  }
+  _ui_repeat() { # _ui_repeat "char" count
+    local c="$1" n="$2"
+    printf "%*s" "$n" "" | tr ' ' "$c"
+  }
+  _ui_top_line()    { local w1=$1 w2=$2; printf "%s%s%s%s%s%s%s\n" "$TL" "$(_ui_repeat "$H" $((w1+2)))" "$TJ" "$(_ui_repeat "$H" $((w2+2)))" "$TR"; }
+  _ui_mid_line()    { local w1=$1 w2=$2; printf "%s%s%s%s%s%s%s\n" "$LJ" "$(_ui_repeat "$H" $((w1+2)))" "$CJ" "$(_ui_repeat "$H" $((w2+2)))" "$RJ"; }
+  _ui_bottom_line() { local w1=$1 w2=$2; printf "%s%s%s%s%s%s%s\n" "$BL" "$(_ui_repeat "$H" $((w1+2)))" "$BJ" "$(_ui_repeat "$H" $((w2+2)))" "$BR"; }
+
+  _ui_init_box_chars
+
+  # ---------- sizing ----------
+  local cols
+  cols=$(tput cols 2>/dev/null || echo 80)
+  (( cols < 60 )) && cols=60
+  (( cols > 120 )) && cols=120
+
+  # Two columns: "No." (w1) and "Action" (w2)
+  local w1=4
+  local w2=$(( cols - 7 - w1 ))   # total width = w1 + w2 + 7 (borders/spaces)
+  (( w2 < 40 )) && w2=40
+
   while true; do
     clear
     echo -e "${BORD}=========================================${RESET}"
@@ -803,38 +838,63 @@ menu() {
     echo -e "${BORD}=========================================${RESET}"
     _setup_brief_status
     echo
-    echo -e "${NUM} 1)${RESET} Install dependencies"
-    echo -e "${NUM} 2)${RESET} Setup (email + Cloudflare token + enable auto-renew)"
-    echo -e "${NUM} 3)${RESET} Add certificate (Cloudflare DNS)"
-    echo -e "${NUM} 4)${RESET} Add certificate (Standard Certbot: standalone/webroot)"
-    echo -e "${NUM} 5)${RESET} List managed domains"
-    echo -e "${NUM} 6)${RESET} Change publish path & publish now"
-    echo -e "${NUM} 7)${RESET} Manual renew / dry-run (managed domains only)"
-    echo -e "${NUM} 8)${RESET} Rotate Cloudflare token"
-    echo -e "${NUM} 9)${RESET} Remove a domain"
-    echo -e "${NUM}10)${RESET} Import existing Certbot certificate (adopt)"
-    echo -e "${NUM}11)${RESET} Convert existing Certbot cert to Cloudflare DNS"
-    echo -e "${NUM}12)${RESET} Self-update Smart-SSL"
-    echo -e "${NUM}13)${RESET} Uninstall Smart-SSL"
-    echo -e "${NUM} 0)${RESET} Exit"
+
+    # Menu entries: "No|Label"
+    local items=(
+      "1|Install dependencies"
+      "2|Setup (email + Cloudflare token + enable auto-renew)"
+      "3|Add certificate (Cloudflare DNS)"
+      "4|Add certificate (Standard Certbot: standalone/webroot)"
+      "5|List managed domains"
+      "6|Change publish path & publish now"
+      "7|Manual renew / dry-run (managed domains only)"
+      "8|Rotate Cloudflare token"
+      "9|Remove a domain"
+      "10|Import existing Certbot certificate (adopt)"
+      "11|Convert existing Certbot cert to Cloudflare DNS"
+      "12|Self-update Smart-SSL"
+      "13|Uninstall Smart-SSL"
+      "0|Exit"
+    )
+
+    # Draw table
+    _ui_top_line  "$w1" "$w2"
+    printf "%s %-*s %s %-*s %s\n" "$V" "$w1" "No." "$V" "$w2" "Action" "$V"
+    _ui_mid_line  "$w1" "$w2"
+
+    local it num label pad
+    for it in "${items[@]}"; do
+      num="${it%%|*}"
+      label="${it#*|}"
+      pad=$(( w1 - ${#num} ))
+      (( pad < 0 )) && pad=0
+      # Left cell: pre-pad with spaces, then print colored number (keeps alignment without clipping ANSI codes)
+      printf "%s %*s%s%s %s %-*.*s %s\n" \
+        "$V" "$pad" "" "$NUM" "$num$RESET" "$V" "$w2" "$w2" "$label" "$V"
+    done
+
+    _ui_bottom_line "$w1" "$w2"
+
     echo
     read -rp "Select an option: " choice
+    echo
+
     case "$choice" in
-      1) cmd_install; pause ;;
-      2) cmd_setup; pause ;;
-      3) cmd_add_cf; pause ;;
-      4) cmd_add_std; pause ;;
-      5) cmd_list; pause ;;
-      6) cmd_change_publish; pause ;;
-      7) cmd_manual_renew; pause ;;
-      8) cmd_rotate_token; pause ;;
-      9) cmd_remove; pause ;;
+      1)  cmd_install; pause ;;
+      2)  cmd_setup; pause ;;
+      3)  cmd_add_cf; pause ;;
+      4)  cmd_add_std; pause ;;
+      5)  cmd_list; pause ;;
+      6)  cmd_change_publish; pause ;;
+      7)  cmd_manual_renew; pause ;;
+      8)  cmd_rotate_token; pause ;;
+      9)  cmd_remove; pause ;;
       10) cmd_import_existing; pause ;;
       11) cmd_convert_to_cf; pause ;;
       12) cmd_self_update ;;   # restarts into new version
       13) cmd_uninstall ;;     # exits
-      0) clear; exit 0 ;;
-      *) echo "Invalid option"; sleep 1 ;;
+      0)  clear; exit 0 ;;
+      *)  echo "Invalid option"; sleep 1 ;;
     esac
   done
 }
