@@ -654,7 +654,7 @@ cmd_uninstall() {
 
   echo "[*] Collecting managed domains…"
   shopt -s nullglob
-  conf_files=("${DOM_DIR}"/*.conf)
+  conf_files=( "${DOM_DIR}"/*.conf )
   shopt -u nullglob
 
   _doms=()
@@ -663,8 +663,38 @@ cmd_uninstall() {
   fi
   echo "    Found: ${#_doms[@]} domain(s)"
 
+  # --- NEW: collect publish paths and offer to remove copied certs there ---
+  pubpaths=()
+  if ((${#conf_files[@]})); then
+    while IFS='=' read -r k v; do
+      [[ "$k" == "publish_path" && -n "$v" ]] || continue
+      # normalize (trim trailing spaces, ensure trailing slash)
+      v="$(echo -n "$v" | sed 's:[[:space:]]\+$::')"
+      [[ "$v" == */ ]] || v="${v}/"
+      pubpaths+=("$v")
+    done < <(grep -h '^publish_path=' "${conf_files[@]}" 2>/dev/null)
+  fi
+  # dedupe
+  if ((${#pubpaths[@]})); then
+    mapfile -t pubpaths < <(printf '%s\n' "${pubpaths[@]}" | awk '!seen[$0]++')
+  fi
+
+  if ((${#pubpaths[@]})); then
+    echo "[*] Publish paths detected:"
+    printf '    - %s\n' "${pubpaths[@]}"
+    read -rp "Remove copied cert files from these paths (privkey.pem, key.pem, fullchain.pem, chain.pem)? (y/N): " rm_pub
+    if [[ "${rm_pub,,}" == "y" ]]; then
+      for p in "${pubpaths[@]}"; do
+        rm -f "${p%/}/privkey.pem" "${p%/}/key.pem" "${p%/}/fullchain.pem" "${p%/}/chain.pem" 2>/dev/null || true
+      done
+      echo "[*] Removed copied cert files from publish paths."
+    fi
+  fi
+  # --- end NEW ---
+
   echo "[*] Removing Smart-SSL config directory…"
   rm -rf "$CONF_DIR" 2>/dev/null
+
   echo "[*] Removing Cloudflare token file (if present)…"
   rm -f "$CF_CREDS" 2>/dev/null
 
