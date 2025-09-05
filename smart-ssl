@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Smart-SSL v1.2.5
+# Smart-SSL v1.2.6
 
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="1.2.5"
+VERSION="1.2.6"
 
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
 SMARTSSL_BRANCH="${SMARTSSL_BRANCH:-main}"
@@ -323,24 +323,21 @@ cmd_publish() {
     return 0
   fi
 
-  # Normalize path (trim spaces; add trailing slash for clarity)
+  # Normalize path (trim) and ensure trailing slash
   publish_path="$(echo -n "$publish_path" | sed 's:[[:space:]]\+$::')"
   [[ "${publish_path}" == */ ]] || publish_path="${publish_path}/"
-
   mkdir -p "${publish_path}"
 
-  # Copy files (not move) so LE stays canonical; set safe perms
+  # Copy (not move) so LE stays canonical; safe perms
   install -m "${DEFAULT_KEY_MODE}"  "${lineage}/privkey.pem"   "${publish_path}privkey.pem"
   install -m "${DEFAULT_CERT_MODE}" "${lineage}/fullchain.pem" "${publish_path}fullchain.pem"
-
-  # Provide chain.pem when available
   cp -f "${lineage}/chain.pem" "${publish_path}chain.pem" 2>/dev/null || true
 
-  # Also write a real Marzban-friendly key file: key.pem (copy, not symlink)
+  # Also provide Marzban-friendly key name as a real file
   install -m "${DEFAULT_KEY_MODE}" "${lineage}/privkey.pem" "${publish_path}key.pem"
 
   echo "[*] Published ${domain} → ${publish_path}"
-  echo "    (Tip: using a trailing '/' in paths is recommended, e.g. /var/lib/marzban/certs/)"
+  echo "    Tip: end directory paths with '/' (e.g. /var/lib/marzban/certs/)"
 }
 
 # ---------- Selectors ----------
@@ -422,16 +419,12 @@ cmd_change_publish() {
   local dom curr
   dom=$(grep '^domain=' "$file" | cut -d= -f2)
   curr=$(grep '^publish_path=' "$file" | cut -d= -f2)
-
-  # Show a hint so users add the trailing slash
   echo "Hint: end directories with '/' (e.g. /var/lib/marzban/certs/)"
   read -rp "New publish path for '${dom}' (empty=use LE path only) [${curr}]: " np
   np="${np:-$curr}"
   np="$(echo -n "$np" | sed 's:[[:space:]]\+$::')"
   [[ -n "$np" && "${np}" != */ ]] && np="${np}/"
-
   sed -i "s|^publish_path=.*|publish_path=${np}|" "$file"
-
   echo "[*] Publishing to new path…"
   if cmd_publish "$dom"; then
     if [[ -n "$curr" && -n "$np" && "$curr" != "$np" && -d "$curr" ]]; then
@@ -446,7 +439,6 @@ cmd_change_publish() {
     echo "[!] Publish failed; path updated in config but no files were copied."
   fi
 }
-
 
 cmd_remove() {
   ensure_root; ensure_paths
@@ -498,12 +490,9 @@ _domains_from_renewal() {
 }
 
 _domains_from_live_cert() {
-  # Read DNS names (SANs) from the live certificate
   local nm="${1:-}"
   local cert="/etc/letsencrypt/live/${nm}/cert.pem"
   [[ -f "$cert" ]] || { echo ""; return 0; }
-
-  # Extract SANs robustly; output space-separated list of DNS names
   local sans
   sans="$(openssl x509 -noout -text -in "$cert" 2>/dev/null \
         | awk '/Subject Alternative Name/{flag=1; next} /X509v3/{flag=0} flag' \
@@ -688,26 +677,78 @@ cmd_uninstall() {
   exit 0
 }
 
+# ---------- UI Colors (safe for light & dark) ----------
+init_colors() {
+  # Allow override: SMARTSSL_THEME=light|dark|auto
+  local theme="${SMARTSSL_THEME:-auto}"
+  local supports_color=0
+  if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
+    if [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
+      supports_color=1
+    fi
+  fi
+
+  if [[ $supports_color -eq 1 ]]; then
+    # Universal-safe defaults (good on light & dark)
+    BORD="\e[1;37m"   # bold white border
+    NUM="\e[36m"      # cyan for numbers
+    TITLE="\e[36m"    # cyan title
+    RESET="\e[0m"
+
+    # Optional theme tweak
+    case "$theme" in
+      light)
+        BORD="\e[1;30m"   # bold black/gray border on light
+        NUM="\e[36m"
+        TITLE="\e[30m"
+        ;;
+      dark)
+        BORD="\e[1;37m"
+        NUM="\e[36m"
+        TITLE="\e[36m"
+        ;;
+      *) : ;;
+    esac
+    GOOD="\e[32m"; BAD="\e[31m"; WARN="\e[33m"
+  else
+    BORD=""; NUM=""; TITLE=""; RESET=""; GOOD=""; BAD=""; WARN=""
+  fi
+}
+
+_setup_brief_status() {
+  read -r EM_OK CF_OK < <(_setup_status)
+  local em icon1 icon2
+  [[ "$EM_OK" == "yes" ]] && icon1="${GOOD}✅${RESET}" || icon1="${BAD}❌${RESET}"
+  if [[ "$CF_OK" == "yes" ]]; then icon2="${GOOD}✅${RESET}"; else icon2="${WARN}⚠${RESET}"; fi
+  em="${CFG_EMAIL:-not set}"
+  echo -e "   Email: ${em}   CF token: ${icon2}   Setup: ${icon1}"
+}
+
 # ---------- Menu ----------
 menu() {
   ensure_root; ensure_paths; read_conf
+  init_colors
   while true; do
     clear
-    echo "=== Smart-SSL v${VERSION} ==="
-    echo "1) Install dependencies"
-    echo "2) Setup (email + Cloudflare token + enable auto-renew)"
-    echo "3) Add certificate (Cloudflare DNS)"
-    echo "4) Add certificate (Standard Certbot: standalone/webroot)"
-    echo "5) List managed domains"
-    echo "6) Change publish path & publish now"
-    echo "7) Manual renew / dry-run (managed domains only)"
-    echo "8) Rotate Cloudflare token"
-    echo "9) Remove a domain"
-    echo "10) Import existing Certbot certificate (adopt)"
-    echo "11) Convert existing Certbot cert to Cloudflare DNS"
-    echo "12) Self-update Smart-SSL"
-    echo "13) Uninstall Smart-SSL"
-    echo "0) Exit"
+    echo -e "${BORD}=========================================${RESET}"
+    echo -e "        ${TITLE}Smart-SSL v${VERSION}${RESET}"
+    echo -e "${BORD}=========================================${RESET}"
+    _setup_brief_status
+    echo
+    echo -e "${NUM} 1)${RESET} Install dependencies"
+    echo -e "${NUM} 2)${RESET} Setup (email + Cloudflare token + auto-renew)"
+    echo -e "${NUM} 3)${RESET} Add certificate (Cloudflare DNS)"
+    echo -e "${NUM} 4)${RESET} Add certificate (Standard Certbot: standalone/webroot)"
+    echo -e "${NUM} 5)${RESET} List managed domains"
+    echo -e "${NUM} 6)${RESET} Change publish path & publish now"
+    echo -e "${NUM} 7)${RESET} Manual renew / dry-run (managed domains only)"
+    echo -e "${NUM} 8)${RESET} Rotate Cloudflare token"
+    echo -e "${NUM} 9)${RESET} Remove a domain"
+    echo -e "${NUM}10)${RESET} Import existing Certbot certificate (adopt)"
+    echo -e "${NUM}11)${RESET} Convert existing Certbot cert to Cloudflare DNS"
+    echo -e "${NUM}12)${RESET} Self-update Smart-SSL"
+    echo -e "${NUM}13)${RESET} Uninstall Smart-SSL"
+    echo -e "${NUM} 0)${RESET} Exit"
     echo
     read -rp "Select an option: " choice
     case "$choice" in
