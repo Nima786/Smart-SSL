@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Smart-SSL v1.2.6
+# Smart-SSL v1.2.5
 
 set -Eeuo pipefail
 
 APP="smart-ssl"
-VERSION="1.2.6"
+VERSION="1.2.5"
 
 SMARTSSL_REPO="${SMARTSSL_REPO:-Nima786/Smart-SSL}"
 SMARTSSL_BRANCH="${SMARTSSL_BRANCH:-main}"
