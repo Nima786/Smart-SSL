@@ -804,23 +804,29 @@ menu() {
     _setup_brief_status
     echo
 
-    # --- Double-Spaced Menu Items ---
-    # The format string now ends in '%s\n\n' to add a blank line after each item.
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "1" "Install dependencies"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "2" "Setup (email + Cloudflare token + enable auto-renew)"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "3" "Add certificate (Cloudflare DNS)"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "4" "Add certificate (Standard Certbot: standalone/webroot)"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "5" "List managed domains"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "6" "Change publish path & publish now"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "7" "Manual renew / dry-run (managed domains only)"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "8" "Rotate Cloudflare token"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "9" "Remove a domain"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "10" "Import existing Certbot certificate (adopt)"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "11" "Convert existing Certbot cert to Cloudflare DNS"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "12" "Self-update Smart-SSL"
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "13" "Uninstall Smart-SSL"
+    # --- Grouped Spacing for Readability ---
+    # Single-spaced within groups, with a blank 'echo' between them.
+    printf "   ${NUM}%2s)${RESET} %s\n" "1" "Install dependencies"
+    printf "   ${NUM}%2s)${RESET} %s\n" "2" "Setup (email + Cloudflare token + enable auto-renew)"
+    printf "   ${NUM}%2s)${RESET} %s\n" "3" "Add certificate (Cloudflare DNS)"
+    printf "   ${NUM}%2s)${RESET} %s\n" "4" "Add certificate (Standard Certbot: standalone/webroot)"
+    echo
 
-    printf "   ${NUM}%2s)${RESET} %s\n\n" "0" "Exit"
+    printf "   ${NUM}%2s)${RESET} %s\n" "5" "List managed domains"
+    printf "   ${NUM}%2s)${RESET} %s\n" "6" "Change publish path & publish now"
+    printf "   ${NUM}%2s)${RESET} %s\n" "7" "Manual renew / dry-run (managed domains only)"
+    printf "   ${NUM}%2s)${RESET} %s\n" "8" "Rotate Cloudflare token"
+    printf "   ${NUM}%2s)${RESET} %s\n" "9" "Remove a domain"
+    echo
+
+    printf "   ${NUM}%2s)${RESET} %s\n" "10" "Import existing Certbot certificate (adopt)"
+    printf "   ${NUM}%2s)${RESET} %s\n" "11" "Convert existing Certbot cert to Cloudflare DNS"
+    printf "   ${NUM}%2s)${RESET} %s\n" "12" "Self-update Smart-SSL"
+    printf "   ${NUM}%2s)${RESET} %s\n" "13" "Uninstall Smart-SSL"
+    echo
+
+    printf "   ${NUM}%2s)${RESET} %s\n" "0" "Exit"
+    echo
 
     read -rp "   Select an option: " choice
     case "$choice" in
