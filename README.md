@@ -1,3 +1,8 @@
+<p align="center">
+  <b>English</b> | <a href="README.fa.md">فارسی</a>
+</p>
+<hr>
+
 <h1>Smart-SSL</h1>
 
 <p><em><strong>The intelligent Let's Encrypt & Cloudflare companion for seamless SSL certificate management.</strong></em></p>
