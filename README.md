@@ -3,8 +3,6 @@
 </p>
 <hr>
 
-# Smart-SSL
-An interactive tool for managing Let’s Encrypt SSL certificates...
 
 # Smart-SSL
 
