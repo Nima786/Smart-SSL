@@ -354,27 +354,42 @@ cmd_publish() {
 
 # ---------- Selectors ----------
 _select_domain_from_list() {
+  # build a safe list of domain config files
   shopt -s nullglob
-  mapfile -t files < <(printf "%s\n" "${DOM_DIR}"/*.conf 2>/dev/null || true)
+  local files=( "${DOM_DIR}"/*.conf )
   shopt -u nullglob
-  local n=${#files[@]}
-  (( n > 0 )) || { echo "(no managed domains)" >&2; return 1; }
+
+  # no managed domains -> return to caller
+  if (( ${#files[@]} == 0 )); then
+    echo "(no managed domains yet)" >&2
+    return 1
+  fi
+
   echo "Select a domain:" >&2
   local i=1 d
   for f in "${files[@]}"; do
-    d=$(grep '^domain=' "$f" | cut -d= -f2)
+    d="$(grep -E '^domain=' "$f" 2>/dev/null | cut -d= -f2)"
+    [[ -n "$d" ]] || continue
     printf "  %d) %s\n" "$i" "$d" >&2
     ((i++))
   done
+
+  # if nothing printable was found, bail out
+  if (( i == 1 )); then
+    echo "(no managed domains yet)" >&2
+    return 1
+  fi
+
   echo "  0) Cancel" >&2
   local choice
   while true; do
     read -rp "Enter number: " choice
     [[ "$choice" =~ ^[0-9]+$ ]] || { echo "Enter a number." >&2; continue; }
-    (( choice>=0 && choice<=n )) || { echo "Out of range." >&2; continue; }
+    (( choice>=0 && choice< i )) || { echo "Out of range." >&2; continue; }
     break
   done
   (( choice == 0 )) && { echo "Cancelled." >&2; return 1; }
+
   printf '%s\n' "${files[$((choice-1))]}"
 }
 
