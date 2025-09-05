@@ -814,9 +814,9 @@ menu() {
     local c="$1" n="$2"
     printf "%*s" "$n" "" | tr ' ' "$c"
   }
-  _ui_top_line()    { local w1=$1 w2=$2; printf "%s%s%s%s%s%s%s\n" "$TL" "$(_ui_repeat "$H" $((w1+2)))" "$TJ" "$(_ui_repeat "$H" $((w2+2)))" "$TR"; }
-  _ui_mid_line()    { local w1=$1 w2=$2; printf "%s%s%s%s%s%s%s\n" "$LJ" "$(_ui_repeat "$H" $((w1+2)))" "$CJ" "$(_ui_repeat "$H" $((w2+2)))" "$RJ"; }
-  _ui_bottom_line() { local w1=$1 w2=$2; printf "%s%s%s%s%s%s%s\n" "$BL" "$(_ui_repeat "$H" $((w1+2)))" "$BJ" "$(_ui_repeat "$H" $((w2+2)))" "$BR"; }
+  _ui_top_line()    { local w1=$1 w2=$2; printf "%s%s%s%s%s\n" "$TL" "$(_ui_repeat "$H" $((w1+2)))" "$TJ" "$(_ui_repeat "$H" $((w2+2)))" "$TR"; }
+  _ui_mid_line()    { local w1=$1 w2=$2; printf "%s%s%s%s%s\n" "$LJ" "$(_ui_repeat "$H" $((w1+2)))" "$CJ" "$(_ui_repeat "$H" $((w2+2)))" "$RJ"; }
+  _ui_bottom_line() { local w1=$1 w2=$2; printf "%s%s%s%s%s\n" "$BL" "$(_ui_repeat "$H" $((w1+2)))" "$BJ" "$(_ui_repeat "$H" $((w2+2)))" "$BR"; }
 
   _ui_init_box_chars
 
@@ -859,7 +859,8 @@ menu() {
 
     # Draw table
     _ui_top_line  "$w1" "$w2"
-    printf "%s %-*s %s %-*s %s\n" "$V" "$w1" "No." "$V" "$w2" "Action" "$V"
+    # Use %b so \e color sequences in TITLE/RESET expand if you ever color headers
+    printf "%s %-*b %s %-*b %s\n" "$V" "$w1" "No." "$V" "$w2" "Action" "$V"
     _ui_mid_line  "$w1" "$w2"
 
     local it num label pad
@@ -868,9 +869,10 @@ menu() {
       label="${it#*|}"
       pad=$(( w1 - ${#num} ))
       (( pad < 0 )) && pad=0
-      # Left cell: pre-pad with spaces, then print colored number (keeps alignment without clipping ANSI codes)
-      printf "%s %*s%s%s %s %-*.*s %s\n" \
-        "$V" "$pad" "" "$NUM" "$num$RESET" "$V" "$w2" "$w2" "$label" "$V"
+
+      # Left cell: pre-pad with spaces, then print COLORED number as a single %b (expands \e)
+      printf "%s %*s%b %s %-*.*s %s\n" \
+        "$V" "$pad" "" "${NUM}${num}${RESET}" "$V" "$w2" "$w2" "$label" "$V"
     done
 
     _ui_bottom_line "$w1" "$w2"
