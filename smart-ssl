@@ -794,161 +794,55 @@ _setup_brief_status() {
 
 # ---------- Menu ----------
 menu() {
-  ensure_root
-  ensure_paths
-  read_conf
+  ensure_root; ensure_paths; read_conf
   init_colors
-
-  # How many blank lines between menu items (0 = none, 1 = one line, etc.)
-  local LINE_GAP=1
-
-  # ---------- inline helpers ----------
-  _rep() {  # repeat char n times
-    local c="$1" n="$2"
-    printf "%*s" "$n" "" | tr ' ' "$c"
-  }
-
-  _wrap() {  # _wrap "text" width indent
-    local text="$1" width="$2" indent="$3"
-    if command -v fold >/dev/null 2>&1; then
-      printf "%s\n" "$text" | fold -s -w "$width" | sed "2,\$s/^/${indent}/"
-    else
-      awk -v w="$width" -v ind="$indent" '
-        {
-          line="";
-          for (i=1;i<=NF;i++) {
-            if (length(line $i) + (line==""?0:1) > w) {
-              print line;
-              line=$i;
-            } else {
-              line=(line==""?$i:line" "$i);
-            }
-          }
-          print line;
-        }' <<<"$text" | sed "2,\$s/^/${indent}/"
-    fi
-  }
-
-  # spacer rows between items; mode: 0=wide/table, 1=compact
-  _gap_rows() {
-    local n="$1" mode="$2" w1="$3" w2="$4" g
-    for ((g=0; g<n; g++)); do
-      if (( mode == 0 )); then
-        printf "| %-${w1}s | %-${w2}s |\n" "" ""
-      else
-        echo
-      fi
-    done
-  }
-
   while true; do
     clear
-    echo -e "${TITLE}Smart-SSL v${VERSION}${RESET}"
-    echo -e "${BORD}=========================================${RESET}"
+    echo -e "${BORD}======================================================${RESET}"
+    echo -e "              ${TITLE}Smart-SSL v${VERSION}${RESET}"
+    echo -e "${BORD}======================================================${RESET}"
     _setup_brief_status
     echo
 
-    # Menu entries: "No|Label"
-    local items=(
-      "1|Install dependencies"
-      "2|Setup (email + Cloudflare token + enable auto-renew)"
-      "3|Add certificate (Cloudflare DNS)"
-      "4|Add certificate (Standard Certbot: standalone/webroot)"
-      "5|List managed domains"
-      "6|Change publish path & publish now"
-      "7|Manual renew / dry-run (managed domains only)"
-      "8|Rotate Cloudflare token"
-      "9|Remove a domain"
-      "10|Import existing Certbot certificate (adopt)"
-      "11|Convert existing Certbot cert to Cloudflare DNS"
-      "12|Self-update Smart-SSL"
-      "13|Uninstall Smart-SSL"
-      "0|Exit"
-    )
+    # --- Double-Spaced Menu Items ---
+    # The format string now ends in '%s\n\n' to add a blank line after each item.
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "1" "Install dependencies"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "2" "Setup (email + Cloudflare token + enable auto-renew)"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "3" "Add certificate (Cloudflare DNS)"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "4" "Add certificate (Standard Certbot: standalone/webroot)"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "5" "List managed domains"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "6" "Change publish path & publish now"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "7" "Manual renew / dry-run (managed domains only)"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "8" "Rotate Cloudflare token"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "9" "Remove a domain"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "10" "Import existing Certbot certificate (adopt)"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "11" "Convert existing Certbot cert to Cloudflare DNS"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "12" "Self-update Smart-SSL"
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "13" "Uninstall Smart-SSL"
 
-    # Sizing & mode
-    local cols; cols=$(tput cols 2>/dev/null || echo 80)
-    (( cols < 40 )) && cols=40
-    local compact=0
-    if (( cols < 72 )); then compact=1; fi
+    printf "   ${NUM}%2s)${RESET} %s\n\n" "0" "Exit"
 
-    if (( compact == 0 )); then
-      # ---------- WIDE MODE: ASCII table ----------
-      local w1=4
-      local w2=$(( cols - 7 - w1 ))   # borders & spaces add up to 7
-      (( w2 < 40 )) && w2=40
-
-      # Top border
-      printf "+%s+%s+\n" "$(_rep '-' $((w1+2)))" "$(_rep '-' $((w2+2)))"
-      # Header
-      printf "| %-*s | %-*s |\n" "$w1" "No." "$w2" "Action"
-      # Mid border
-      printf "+%s+%s+\n" "$(_rep '-' $((w1+2)))" "$(_rep '-' $((w2+2)))"
-
-      local i it num label pad
-      for ((i=0; i<${#items[@]}; i++)); do
-        it="${items[i]}"
-        num="${it%%|*}"
-        label="${it#*|}"
-        pad=$(( w1 - ${#num} )); (( pad < 0 )) && pad=0
-
-        # number cell: pre-pad spaces, then colored number via %b
-        printf "| %*s%b | %-*.*s |\n" \
-          "$pad" "" "${NUM}${num}${RESET}" "$w2" "$w2" "$label"
-
-        # vertical spacing except after the last item
-        if (( i < ${#items[@]} - 1 )); then
-          _gap_rows "$LINE_GAP" 0 "$w1" "$w2"
-        fi
-      done
-      # Bottom border
-      printf "+%s+%s+\n" "$(_rep '-' $((w1+2)))" "$(_rep '-' $((w2+2)))"
-
-    else
-      # ---------- COMPACT MODE: mobile-friendly list ----------
-      echo "No.  Action"
-      echo "---- ----------------------------------------------------------------"
-      local i it num label indent width
-      width=$(( cols - 6 )); (( width < 20 )) && width=20
-      for ((i=0; i<${#items[@]}; i++)); do
-        it="${items[i]}"
-        num="${it%%|*}"
-        label="${it#*|}"
-        indent="     "  # 5 spaces after "N) "
-
-        printf "%b) " "${NUM}${num}${RESET}"
-        _wrap "$label" "$width" "$indent"
-
-        if (( i < ${#items[@]} - 1 )); then
-          _gap_rows "$LINE_GAP" 1 0 0
-        fi
-      done
-      echo "---- ----------------------------------------------------------------"
-    fi
-
-    echo
-    read -rp "Select an option: " choice
-    echo
-
+    read -rp "   Select an option: " choice
     case "$choice" in
-      1)  cmd_install; pause ;;
-      2)  cmd_setup; pause ;;
-      3)  cmd_add_cf; pause ;;
-      4)  cmd_add_std; pause ;;
-      5)  cmd_list; pause ;;
-      6)  cmd_change_publish; pause ;;
-      7)  cmd_manual_renew; pause ;;
-      8)  cmd_rotate_token; pause ;;
-      9)  cmd_remove; pause ;;
+      1) cmd_install; pause ;;
+      2) cmd_setup; pause ;;
+      3) cmd_add_cf; pause ;;
+      4) cmd_add_std; pause ;;
+      5) cmd_list; pause ;;
+      6) cmd_change_publish; pause ;;
+      7) cmd_manual_renew; pause ;;
+      8) cmd_rotate_token; pause ;;
+      9) cmd_remove; pause ;;
       10) cmd_import_existing; pause ;;
       11) cmd_convert_to_cf; pause ;;
       12) cmd_self_update ;;   # restarts into new version
-      13) cmd_uninstall ;;     # exits
-      0|q|Q) clear; exit 0 ;;
-      *)  echo "Invalid option"; sleep 1 ;;
+      13) cmd_uninstall ;; # exits
+      0) clear; exit 0 ;;
+      *) echo "Invalid option"; sleep 1 ;;
     esac
   done
 }
+
 # ---------- Dispatcher ----------
 case "${1:-}" in
   menu|'') menu ;;
