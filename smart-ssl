@@ -55,6 +55,12 @@ check_deps() {
   have curl    || need+=(curl)
   have openssl || need+=(openssl)
   have certbot || need+=(certbot)
+
+  # NEW: Explicitly check if the Cloudflare plugin package is installed.
+  if ! dpkg-query -W -f='${Status}' python3-certbot-dns-cloudflare 2>/dev/null | grep -q "install ok installed"; then
+    need+=(python3-certbot-dns-cloudflare)
+  fi
+
   if ((${#need[@]})); then
     echo "[*] Installing dependencies: ${need[*]}"
     apt update
