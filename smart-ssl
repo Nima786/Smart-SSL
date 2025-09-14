@@ -543,7 +543,7 @@ cmd_import_existing() {
   (( ${#LINS[@]} )) || { echo "(no real certbot lineages found)"; return 0; }
 
   shopt -s nullglob
- # mapfile -t managed < <(grep -h '^domain=' "${DOM_DIR}"/*.conf 2>/dev/null | cut -d= -f2 || true)
+
   managed_output=$(grep -h '^domain=' "${DOM_DIR}"/*.conf 2>/dev/null | cut -d= -f2 || true)
   mapfile -t managed <<< "$managed_output"
   shopt -u nullglob
