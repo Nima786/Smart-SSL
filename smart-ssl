@@ -539,11 +539,13 @@ _domains_from_live_cert() {
 cmd_import_existing() {
   ensure_root; ensure_paths
   mapfile -t LINS < <(_list_lineages_real)
- echo "DEBUG 1: LINS array size is ${#LINS[@]}. Contents: [${LINS[*]}]"; sleep 3
+  echo "DEBUG 1: LINS array size is ${#LINS[@]}. Contents: [${LINS[*]}]"; sleep 3
   (( ${#LINS[@]} )) || { echo "(no real certbot lineages found)"; return 0; }
 
   shopt -s nullglob
-  mapfile -t managed < <(grep -h '^domain=' "${DOM_DIR}"/*.conf 2>/dev/null | cut -d= -f2 || true)
+ # mapfile -t managed < <(grep -h '^domain=' "${DOM_DIR}"/*.conf 2>/dev/null | cut -d= -f2 || true)
+  managed_output=$(grep -h '^domain=' "${DOM_DIR}"/*.conf 2>/dev/null | cut -d= -f2 || true)
+  mapfile -t managed <<< "$managed_output"
   shopt -u nullglob
   echo "DEBUG 2: managed array size is ${#managed[@]}. Contents: [${managed[*]}]"; sleep 3
   declare -A seen=(); for d in "${managed[@]}"; do seen["$d"]=1; done
