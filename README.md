@@ -1,132 +1,168 @@
-<p align="center">
-  <b>English</b> | <a href="README.fa.md">فارسی</a>
-</p>
-<hr>
+**English** | [فارسی](README.fa.md)
 
-<h1>Smart-SSL</h1>
+* * *
 
-<p><em><strong>The intelligent Let's Encrypt & Cloudflare companion for seamless SSL certificate management.</strong></em></p>
+Smart-SSL
+=========
 
-<blockquote>
-  <h3>🚀 Quick Setup</h3>
-  <p>For a one-line installation and execution, run the following command:</p>
-  <pre><code>bash <(curl -fsSL https://raw.githubusercontent.com/Nima786/Smart-SSL/main/quick-install.sh)</code></pre>
-</blockquote>
+_**The intelligent Let's Encrypt & Cloudflare companion for seamless SSL certificate management.**_
 
-<blockquote>
-  <p>ℹ️ <strong>Smart-SSL</strong> is a powerful Bash script that supercharges <code>certbot</code> by integrating it with Cloudflare's DNS API. This allows you to issue and manage Let's Encrypt SSL certificates—including <strong>wildcards</strong>—without needing open ports (80/443) on your server. It's a complete, menu-driven solution for effortless, secure, and flexible certificate management.</p>
-</blockquote>
+> ### 🚀 Quick Setup
+> 
+> For a one-line installation and execution, run the following command:
+> 
+>     bash <(curl -fsSL https://raw.githubusercontent.com/Nima786/Smart-SSL/main/quick-install.sh)
 
-<hr>
+> ℹ️ **Smart-SSL** is a powerful Bash script that supercharges `certbot` by integrating it with Cloudflare's DNS API. This allows you to issue and manage Let's Encrypt SSL certificates—including **wildcards** and **multi-domain** certificates—without needing open ports (80/443) on your server. It's a complete, menu-driven solution for effortless, secure, and flexible certificate management.
 
-<h2>✨ Key Features</h2>
+* * *
 
-<ul>
-  <li>✅ <strong>Cloudflare DNS-01 Challenge:</strong> Obtain SSL certificates without exposing your server to the internet on port 80. Perfect for internal services, firewalled servers, or non-standard setups.</li>
-  <li>✅ <strong>Wildcard Certificate Support:</strong> Easily secure all your subdomains (<code>*.example.com</code>) with a single certificate.</li>
-  <li>✅ <strong>Standard Certbot Methods:</strong> Full support for traditional <code>standalone</code> and <code>webroot</code> challenges if you prefer them.</li>
-  <li>✅ <strong>Automated Publishing:</strong> Automatically copies renewed certificates to a location of your choice, ensuring your applications always have the latest cert.</li>
-  <li>✅ <strong>Full Lifecycle Management:</strong> A user-friendly menu to add, list, remove, and manage your domains.</li>
-  <li>✅ <strong>Effortless Migration:</strong> Import existing <code>certbot</code> certificates into Smart-SSL management or convert them from standard methods to the more powerful Cloudflare DNS method.</li>
-  <li>✅ <strong>Self-Contained & Smart:</strong> Includes dependency installation, self-update, and a clean uninstaller.</li>
-  <li>✅ <strong>Secure by Design:</strong> Manages your Cloudflare API token securely with appropriate file permissions.</li>
-</ul>
+✨ Key Features
+--------------
 
-<hr>
+*   ✅ **Cloudflare DNS-01 Challenge:** Obtain SSL certificates without exposing your server to the internet on port 80. Perfect for internal services, firewalled servers, or non-standard setups.
+*   ✅ **Multi-Domain Certificates:** Issue separate certificates for multiple, completely different domains (e.g., `site1.com`, `api.site2.net`) in a single operation.
+*   ✅ **Wildcard Certificate Support:** Easily secure all your subdomains (`*.example.com`) with a single certificate.
+*   ✅ **Automated Publishing:** Automatically copies renewed certificates to a location of your choice, ensuring your applications always have the latest cert.
+*   ✅ **"Smart" Management:** The interactive menus intelligently inspect your actual certificates, so you always see the full, correct list of domains covered.
+*   ✅ **Full Lifecycle Management:** A user-friendly, numbered menu to add, list, remove, and manage your domains with safe defaults.
+*   ✅ **Effortless Migration:** Import existing `certbot` certificates into Smart-SSL management or convert them to the more powerful Cloudflare DNS method.
+*   ✅ **Self-Contained & Smart:** Includes dependency installation, self-update, and a clean uninstaller.
+*   ✅ **Secure by Design:** Manages your Cloudflare API token securely with appropriate file permissions.
 
-<h2>🚀 Why Smart-SSL?</h2>
+* * *
 
-<p>While <code>certbot</code> is an amazing tool, managing certificates can become complex, especially in scenarios without a standard web server or when wildcard support is needed. Smart-SSL bridges this gap.</p>
+🚀 Why Smart-SSL?
+-----------------
 
-<blockquote>
-  <p>✅ <strong>The biggest advantage:</strong> The Cloudflare DNS method. Smart-SSL automates the process of adding a temporary DNS TXT record to prove domain ownership. This means:</p>
-  <ul>
-    <li><strong>No Downtime:</strong> No need to stop your web server to issue a cert.</li>
-    <li><strong>No Open Ports Required:</strong> Your server can remain completely firewalled from public web traffic on port 80.</li>
-    <li><strong>Ultimate Flexibility:</strong> Get certificates for any machine, not just your public-facing web servers.</li>
-  </ul>
-</blockquote>
+While `certbot` is an amazing tool, managing certificates can become complex, especially in scenarios without a standard web server or when wildcard support is needed. Smart-SSL bridges this gap.
 
-<hr>
+> ✅ **The biggest advantage:** The Cloudflare DNS method. Smart-SSL automates the process of adding a temporary DNS TXT record to prove domain ownership. This means:
+> 
+> *   **No Downtime:** No need to stop your web server to issue a cert.
+> *   **No Open Ports Required:** Your server can remain completely firewalled from public web traffic on port 80.
+> *   **Ultimate Flexibility:** Get certificates for any machine, not just your public-facing web servers.
 
-<h2>🛠️ Installation & Setup</h2>
+* * *
 
-<h3>1. Download the Script</h3>
-<pre><code>curl -sSL https://raw.githubusercontent.com/Nima786/Smart-SSL/main/smart-ssl -o /usr/local/bin/smart-ssl
-chmod +x /usr/local/bin/smart-ssl</code></pre>
+🛠️ Installation & Setup
+------------------------
 
-<h3>2. Run the Interactive Menu</h3>
-<p>Just run the script as root to launch the main menu:</p>
-<pre><code>sudo smart-ssl</code></pre>
+### 1\. Download the Script
 
-<h3>3. Initial Setup</h3>
-<p>From the main menu, complete these two one-time steps:</p>
-<ol>
-  <li>Select <strong>Option 1) Install dependencies</strong> to ensure <code>certbot</code> and the Cloudflare plugin are installed.</li>
-  <li>Select <strong>Option 2) Setup</strong> to configure your Let's Encrypt email and your Cloudflare API Token.</li>
-</ol>
+    curl -sSL https://raw.githubusercontent.com/Nima786/Smart-SSL/main/smart-ssl -o /usr/local/bin/smart-ssl
+    chmod +x /usr/local/bin/smart-ssl
 
-<blockquote>
-  <p>⚠️ <strong>Cloudflare API Token:</strong> You can generate a token from your Cloudflare Dashboard. Go to <strong>My Profile → API Tokens → Create Token</strong>. Use the "Edit zone DNS" template for the required permissions.</p>
-</blockquote>
+### 2\. Run the Interactive Menu
 
-<hr>
+Just run the script as root to launch the main menu:
 
-<h2>📖 Common Workflows</h2>
+    sudo smart-ssl
 
-<h3>Issuing a Certificate (Cloudflare Method)</h3>
-<p>This is the recommended method for most use cases.</p>
-<ol>
-  <li>Choose <strong>Option 3) Add certificate (Cloudflare DNS)</strong>.</li>
-  <li>Enter your domain (e.g., <code>example.com</code>).</li>
-  <li>Choose the mode: <code>simple</code> for the base domain or <code>wildcard</code> to secure all subdomains.</li>
-  <li>(Optional) Specify a <strong>Publish Path</strong>. This is where Smart-SSL will copy the certificate files (<code>privkey.pem</code> and <code>fullchain.pem</code>) for your applications to use.</li>
-</ol>
+### 3\. Initial Setup
 
-<h3>Managing Your Certificates</h3>
-<ul>
-  <li><strong>List Domains (Option 5):</strong> View all managed domains, their mode, publish path, and expiry date.</li>
-  <li><strong>Change Publish Path (Option 6):</strong> Update the destination directory for a certificate and immediately publish the latest version.</li>
-  <li><strong>Remove a Domain (Option 9):</strong> Stop managing a domain with Smart-SSL, with an option to also delete the certificate from <code>certbot</code>.</li>
-</ul>
+From the main menu, complete these two one-time steps:
 
-<hr>
+1.  Select **Option 1) Install dependencies** to ensure `certbot` and the Cloudflare plugin are installed.
+2.  Select **Option 2) Setup** to configure your Let's Encrypt email and your Cloudflare API Token.
 
-<h2>🔮 Advanced Features</h2>
+### How to Get the Cloudflare API Token
 
-<h3>Importing an Existing Certificate (Option 10)</h3>
-<p>Already have certificates on your server? You can bring them under Smart-SSL management to enable features like auto-publishing.</p>
-<ol>
-  <li>Select <strong>Option 10) Import existing Certbot certificate</strong>.</li>
-  <li>Choose the certificate you wish to adopt from the list.</li>
-  <li>Define a publish path if needed.</li>
-</ol>
+For security, you should create an API token with the minimum required permissions. Follow these steps:
 
-<h3>Converting to Cloudflare DNS (Option 11)</h3>
-<p>Upgrade an existing certificate (e.g., one issued via the <code>webroot</code> method) to the more robust Cloudflare DNS method.</p>
-<ol>
-  <li>Select <strong>Option 11) Convert existing Certbot cert to Cloudflare DNS</strong>.</li>
-  <li>Choose the certificate to convert. The script will automatically re-issue it using the Cloudflare API.</li>
-</ol>
+1.  Log in to your [Cloudflare Dashboard](https://dash.cloudflare.com).
+2.  Click your profile icon in the top right and select **"My Profile"**.
+3.  Navigate to the **"API Tokens"** tab on the left menu.
+4.  Click the **"Create Token"** button.
+5.  Scroll down to the "Custom token" section and click **"Get started"**. A better way is to find the **"Edit zone DNS"** template and click **"Use template"**.
+6.  **Configure the token:**
+    *   **Token name:** Give it a descriptive name (e.g., `smart-ssl-vps`).
+    *   **Permissions:** The template will automatically add `Zone:DNS:Edit`, which is correct.
+    *   **Zone Resources:** This is the most important step for security. Select **"Include"**, then **"Specific zone"**, and choose the domain you want to issue certificates for. Avoid using "All zones" unless absolutely necessary.
+7.  Click **"Continue to summary"**.
+8.  Review the settings and click **"Create Token"**.
 
-<hr>
+> ⚠️ **Important:** Cloudflare will only show you the token **once**. Copy it immediately and save it in a safe place. You will not be able to see it again after you leave the page.
 
-<h2>⚙️ Maintenance</h2>
+* * *
 
-<ul>
-  <li><strong>Self-Update (Option 12):</strong> Fetches the latest version of the script directly from GitHub.</li>
-  <li><strong>Uninstall (Option 13):</strong> A comprehensive uninstaller that cleanly removes the script and its configurations.</li>
-  <li><strong>Manual Renew (Option 7):</strong> Perform a dry run of the renewal process for your managed domains to test your setup.</li>
-</ul>
+📖 Common Workflows
+-------------------
 
-<hr>
+### Issuing a Certificate (Cloudflare Method)
 
-<h2>🤖 Non-Interactive CLI</h2>
+This is the recommended method for most use cases. From the main menu, choose **Option 3) Add certificate (Cloudflare DNS)**.
 
-<p>Every menu option is also available as a command-line argument, making Smart-SSL perfect for automation. Run <code>smart-ssl help</code> to see all available commands.</p>
+1.  **Choose the Certificate Type:**
+    *   Select **1) Simple Certificate** for one or more specific domains.
+    *   Select **2) Wildcard Certificate** for a single domain (e.g., `*.example.com`).
+2.  **Enter Your Domain(s):**
+    *   For a Simple cert, you can enter a single domain (`site1.com`) or a comma-separated list (`site1.com,site2.net`). The script will get a separate certificate for each.
+    *   For a Wildcard cert, enter the single base domain (`example.com`).
+3.  **(Optional) Specify a Publish Path:** This is where Smart-SSL will copy the certificate files (`privkey.pem` and `fullchain.pem`) for your applications to use.
 
-<pre><code># Example: List domains from the command line
-smart-ssl list
+### Managing Your Certificates
 
-# Example: Publish a certificate for a specific domain
-smart-ssl publish mydomain.com</code></pre>
+*   **List Domains (Option 5):** View all managed certificates, the full list of domains they cover, their custom paths, and expiry dates.
+*   **Change Publish Path (Option 6):** Update the destination directory for a certificate and immediately publish the latest version.
+*   **Remove a Domain (Option 9):** Safely remove a certificate from both Smart-SSL and `certbot`. The menu will show all domains covered by the certificate you are removing.
+
+* * *
+
+🔮 Advanced Features
+--------------------
+
+### Importing an Existing Certificate (Option 10)
+
+Already have certificates on your server? You can bring them under Smart-SSL management to enable features like auto-publishing.
+
+1.  Select **Option 10) Import existing Certbot certificate**.
+2.  Choose the certificate you wish to adopt from the list.
+3.  Define a publish path if needed.
+
+### Converting to Cloudflare DNS (Option 11)
+
+Upgrade an existing certificate (e.g., one issued via the `webroot` method) to the more robust Cloudflare DNS method.
+
+1.  Select **Option 11) Convert existing Certbot cert to Cloudflare DNS**.
+2.  Choose the certificate to convert. The script will automatically re-issue it using the Cloudflare API.
+
+* * *
+
+⚙️ Maintenance
+--------------
+
+*   **Self-Update (Option 12):** Fetches the latest version of the script directly from GitHub.
+*   **Uninstall (Option 13):** A comprehensive uninstaller that cleanly removes the script and its configurations.
+*   **Manual Renew (Option 7):** Perform a dry run of the renewal process for your managed domains to test your setup.
+
+* * *
+
+🤖 Non-Interactive CLI
+----------------------
+
+Every menu option is also available as a command-line argument, making Smart-SSL perfect for automation. Run `smart-ssl help` to see all available commands.
+
+    # Example: List domains from the command line
+    smart-ssl list
+    
+    # Example: Publish a certificate for a specific domain
+    smart-ssl publish mydomain.com
+
+* * *
+
+❤️ Support the Project
+----------------------
+
+If you find Smart-SSL useful and want to support its development, you can buy me a coffee or send a donation.
+
+*   **Crypto Wallet Address:** `zulavpn.x`
+
+Thank you for your support!
+
+* * *
+
+License
+-------
+
+This project is licensed under the [MIT License](LICENSE).
